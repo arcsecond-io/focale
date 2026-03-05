@@ -23,7 +23,7 @@ jobs:
         run: |
           $version = "${{ github.ref_name }}"
           if ($version.StartsWith("v")) { $version = $version.Substring(1) }
-          if ([string]::IsNullOrWhiteSpace($version)) { $version = "0.1.0-dev" }
+          if ([string]::IsNullOrWhiteSpace($version)) { $version = "0.2.0-dev" }
           "value=$version" >> $env:GITHUB_OUTPUT
 
       - name: Install build dependencies

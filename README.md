@@ -24,6 +24,8 @@ Then:
 
 ```bash
 focale login
+focale context list
+focale context use personal
 focale connect --hub-url wss://hub.arcsecond.io/ws/agent
 ```
 
@@ -43,11 +45,17 @@ See:
 focale login
 focale login --auth-mode access-key
 focale status
+focale context show
+focale context list
+focale context use personal
+focale context use my-observatory
 focale doctor --hub-url wss://hub.arcsecond.io/ws/agent
 focale doctor --hub-url wss://hub.arcsecond.io/ws/agent --json
 focale connect --hub-url wss://hub.arcsecond.io/ws/agent
 focale --api-server https://api.arcsecond.dev connect --hub-url wss://hub.arcsecond.dev/ws/agent --once
 focale connect --organisation my-observatory --hub-url wss://hub.arcsecond.io/ws/agent
+focale platesolver status
+focale platesolver solve --peaks-file ./peaks.json
 ```
 
 `focale connect` will automatically:
@@ -56,7 +64,46 @@ focale connect --organisation my-observatory --hub-url wss://hub.arcsecond.io/ws
 2. create a local Ed25519 keypair if needed
 3. enroll a personal or organisation-scoped agent installation if needed
 4. mint a Hub JWT
-5. complete the Hub challenge-response handshake
+5. discover local ASCOM Remote (Alpaca) servers and register new ones in the selected context
+6. complete the Hub challenge-response handshake
+
+You can set the default context once and keep connect/doctor simple:
+
+```bash
+focale context use personal
+# or
+focale context use my-observatory
+```
+
+## Plate solving
+
+For local plate solving, install the optional dependency (Python 3.12+):
+
+```bash
+pip install "focale[platesolver]"
+```
+
+If the package is not yet published in your index, install from the sibling checkout:
+
+```bash
+pip install arcsecond-service-platesolver-astrometry
+# or, from source checkout:
+pip install -e ../arcsecond-service-platesolver-astrometry
+```
+
+Then:
+
+```bash
+focale platesolver status
+focale platesolver solve --peaks-file ./peaks.json --scales 6
+```
+
+You can also target a remote service:
+
+```bash
+focale platesolver status --service-url http://127.0.0.1:8900
+focale platesolver solve --service-url http://127.0.0.1:8900 --peaks-file ./peaks.json
+```
 
 ## Development
 
@@ -76,5 +123,5 @@ This repo includes:
 
 - a PEP 621 `pyproject.toml`
 - a CI workflow for tests
-- a PyPI publish workflow on tags such as `v0.1.0`
+- a PyPI publish workflow on tags such as `v0.2.0`
 - a Windows installer workflow that builds a PyInstaller bundle and wraps it with Inno Setup

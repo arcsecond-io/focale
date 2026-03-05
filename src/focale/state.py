@@ -42,11 +42,25 @@ class InstallationRecord:
 
 
 @dataclass
+class AlpacaServerRecord:
+    scope_type: str
+    scope_value: str
+    address: str
+    name: str
+    manufacturer: str | None = None
+    remote_uuid: str | None = None
+    last_seen_at: str = field(default_factory=_utcnow)
+    registered_at: str | None = None
+
+
+@dataclass
 class FocaleState:
     workspace_id: str
     hub_url: str | None = None
+    default_organisation: str | None = None
     auth: AuthSession | None = None
     installations: dict[str, InstallationRecord] = field(default_factory=dict)
+    alpaca_servers: dict[str, AlpacaServerRecord] = field(default_factory=dict)
 
     @classmethod
     def config_dir(cls) -> Path:
@@ -74,6 +88,10 @@ class FocaleState:
     def scope_key(scope_type: str, scope_value: str) -> str:
         return f"{scope_type}:{scope_value}"
 
+    @staticmethod
+    def alpaca_key(scope_type: str, scope_value: str, address: str) -> str:
+        return f"{scope_type}:{scope_value}:{address}"
+
     @classmethod
     def load(cls) -> "FocaleState":
         path = cls.state_file()
@@ -86,11 +104,14 @@ class FocaleState:
             raise FocaleStateError(f"Unable to read {path}: {exc}") from exc
 
         installs = {}
+        alpaca_servers = {}
         try:
             for key, record in (data.get("installations") or {}).items():
                 installs[key] = InstallationRecord(**record)
+            for key, record in (data.get("alpaca_servers") or {}).items():
+                alpaca_servers[key] = AlpacaServerRecord(**record)
         except TypeError as exc:
-            raise FocaleStateError(f"Invalid installation record in {path}: {exc}") from exc
+            raise FocaleStateError(f"Invalid state record in {path}: {exc}") from exc
 
         workspace_id = data.get("workspace_id") or uuid.uuid4().hex
         auth_payload = data.get("auth")
@@ -103,8 +124,10 @@ class FocaleState:
         return cls(
             workspace_id=workspace_id,
             hub_url=data.get("hub_url"),
+            default_organisation=data.get("default_organisation"),
             auth=auth,
             installations=installs,
+            alpaca_servers=alpaca_servers,
         )
 
     def save(self) -> None:
@@ -114,9 +137,13 @@ class FocaleState:
         payload = {
             "workspace_id": self.workspace_id,
             "hub_url": self.hub_url,
+            "default_organisation": self.default_organisation,
             "auth": asdict(self.auth) if self.auth else None,
             "installations": {
                 key: asdict(record) for key, record in self.installations.items()
+            },
+            "alpaca_servers": {
+                key: asdict(record) for key, record in self.alpaca_servers.items()
             },
         }
         path = self.state_file()
@@ -135,3 +162,12 @@ class FocaleState:
     def clear_installation(self, *, scope_type: str, scope_value: str) -> None:
         key = self.scope_key(scope_type, scope_value)
         self.installations.pop(key, None)
+
+    def get_alpaca_server(
+        self, *, scope_type: str, scope_value: str, address: str
+    ) -> AlpacaServerRecord | None:
+        return self.alpaca_servers.get(self.alpaca_key(scope_type, scope_value, address))
+
+    def set_alpaca_server(self, record: AlpacaServerRecord) -> None:
+        key = self.alpaca_key(record.scope_type, record.scope_value, record.address)
+        self.alpaca_servers[key] = record

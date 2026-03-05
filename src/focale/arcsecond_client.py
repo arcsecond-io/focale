@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 from arcsecond.api import ArcsecondConfig
@@ -14,6 +15,13 @@ from .state import AuthSession, FocaleState
 class MintedHubToken:
     jwt: str
     exp: int
+
+
+@dataclass(frozen=True)
+class OrganisationContext:
+    subdomain: str
+    name: str
+    role: str | None = None
 
 
 class ArcsecondGateway:
@@ -61,7 +69,7 @@ class ArcsecondGateway:
         return bool(self.state.auth and self.state.auth.refresh_token)
 
     def login_with_access_key(self, *, username: str, access_key: str) -> None:
-        self._request(
+        self._request_dict(
             "post",
             "auth/key/verify",
             json={"username": username, "key": access_key},
@@ -75,7 +83,7 @@ class ArcsecondGateway:
         self.state.save()
 
     def login_with_password(self, *, username: str, password: str) -> None:
-        payload = self._request(
+        payload = self._request_dict(
             "post",
             "auth/token",
             json={"username": username, "password": password},
@@ -106,7 +114,7 @@ class ArcsecondGateway:
         if session.refresh_exp and now >= int(session.refresh_exp):
             raise ArcsecondGatewayError("The Arcsecond refresh token has expired. Run `focale login` again.", 401)
 
-        payload = self._request(
+        payload = self._request_dict(
             "post",
             "auth/token/refresh",
             json={"refresh": session.refresh_token},
@@ -135,7 +143,7 @@ class ArcsecondGateway:
         else:
             payload["profile"] = self.require_username()
 
-        response = self._request("post", self._scope_path("agent/enroll", organisation), json=payload)
+        response = self._request_dict("post", self._scope_path("agent/enroll", organisation), json=payload)
         agent_uuid = response.get("uuid")
         if not agent_uuid:
             raise ArcsecondGatewayError("Arcsecond did not return an agent uuid.", 500)
@@ -150,7 +158,7 @@ class ArcsecondGateway:
         else:
             payload["profile"] = self.require_username()
 
-        response = self._request("post", self._scope_path("agent/mint", organisation), json=payload)
+        response = self._request_dict("post", self._scope_path("agent/mint", organisation), json=payload)
         jwt_token = response.get("jwt")
         exp = response.get("exp")
         if not jwt_token or exp is None:
@@ -193,6 +201,68 @@ class ArcsecondGateway:
             return
         self.refresh_access_token()
 
+    def list_organisation_contexts(self) -> list[OrganisationContext]:
+        profile = self._request_dict("get", self._scope_path(f"profiles/{self.require_username()}", None))
+        memberships = profile.get("memberships") or []
+        if not isinstance(memberships, list):
+            raise ArcsecondGatewayError("Unexpected Arcsecond profile memberships payload.", 500)
+
+        seen: set[str] = set()
+        contexts: list[OrganisationContext] = []
+        for membership in memberships:
+            if not isinstance(membership, dict):
+                continue
+            org_data = membership.get("organisation")
+            if not isinstance(org_data, dict):
+                continue
+            subdomain = str(org_data.get("subdomain") or "").strip()
+            if not subdomain or subdomain in seen:
+                continue
+            seen.add(subdomain)
+            contexts.append(
+                OrganisationContext(
+                    subdomain=subdomain,
+                    name=str(org_data.get("name") or subdomain),
+                    role=membership.get("role"),
+                )
+            )
+        return sorted(contexts, key=lambda item: item.subdomain)
+
+    def list_alpaca_servers(self, *, organisation: str | None = None) -> list[dict[str, Any]]:
+        payload = self._request("get", self._scope_path("alpacaservers", organisation))
+        if not isinstance(payload, list):
+            raise ArcsecondGatewayError("Unexpected Arcsecond alpacaservers payload.", 500)
+
+        servers: list[dict[str, Any]] = []
+        for row in payload:
+            if isinstance(row, dict):
+                servers.append(row)
+        return servers
+
+    def create_alpaca_server(
+        self,
+        *,
+        name: str,
+        address: str,
+        manufacturer: str | None = None,
+        organisation: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "name": name,
+            "address": address,
+        }
+        if manufacturer:
+            payload["manufacturer"] = manufacturer
+        if organisation:
+            payload["organisation"] = organisation
+        else:
+            payload["profile"] = self.require_username()
+        return self._request_dict(
+            "post",
+            self._scope_path("alpacaservers", organisation),
+            json=payload,
+        )
+
     def _scope_path(self, path: str, organisation: str | None) -> str:
         if organisation:
             return f"{organisation}/{path}"
@@ -204,6 +274,29 @@ class ArcsecondGateway:
             return {"Authorization": f"Bearer {session.access_token}"}
         return {"X-Arcsecond-API-Authorization": f"Key {session.access_token}"}
 
+    def _request_dict(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict | None = None,
+        authenticated: bool = True,
+        retry_on_401: bool = True,
+    ) -> dict[str, Any]:
+        payload = self._request(
+            method,
+            path,
+            json=json,
+            authenticated=authenticated,
+            retry_on_401=retry_on_401,
+        )
+        if not isinstance(payload, dict):
+            raise ArcsecondGatewayError(
+                f"Unexpected Arcsecond response type: {type(payload)!r}.",
+                500,
+            )
+        return payload
+
     def _request(
         self,
         method: str,
@@ -212,7 +305,7 @@ class ArcsecondGateway:
         json: dict | None = None,
         authenticated: bool = True,
         retry_on_401: bool = True,
-    ) -> dict:
+    ) -> Any:
         headers = {}
         if authenticated:
             self.ensure_authenticated()
@@ -247,9 +340,4 @@ class ArcsecondGateway:
                 response.status_code,
             ) from exc
 
-        if not isinstance(data, dict):
-            raise ArcsecondGatewayError(
-                f"Unexpected Arcsecond response type: {type(data)!r}.",
-                response.status_code,
-            )
         return data
