@@ -77,10 +77,10 @@ focale context use my-observatory
 
 ## Plate solving
 
-For local plate solving, install the optional dependency (Python 3.12+):
+Plate solving support is built in (Python 3.12+):
 
 ```bash
-pip install "focale[platesolver]"
+pip install focale
 ```
 
 If the package is not yet published in your index, install from the sibling checkout:

@@ -73,7 +73,7 @@ class PlateSolverClient:
         if not self.is_ready:
             raise FocaleError(
                 "Local plate solver is not available. "
-                "Install with `pip install \"focale[platesolver]\"` on Python 3.12+."
+                "Install with `pip install focale` on Python 3.12+."
             )
         return {"ok": True, "mode": "local"}
 
@@ -148,7 +148,7 @@ class PlateSolverClient:
             )
             raise FocaleError(
                 "Local plate solver is unavailable. "
-                "Install with `pip install \"focale[platesolver]\"` on Python 3.12+."
+                "Install with `pip install focale` on Python 3.12+."
                 f"{detail}"
             )
 
