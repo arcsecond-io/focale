@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from arcsecond_service_platesolver.solver import AstrometryServiceSolver
 
 from .exceptions import FocaleError
 
@@ -32,8 +33,7 @@ class PlateSolverClient:
         self.service_url = (service_url or "").rstrip("/") or None
         self.cache_dir = cache_dir
         self.scales = scales or [6]
-        self._local_solver = None
-        self._local_solver_error: str | None = None
+        self._local_solver: AstrometryServiceSolver | None = None
 
         if not self.service_url:
             self._init_local_solver()
@@ -47,10 +47,6 @@ class PlateSolverClient:
         if self.mode == "remote":
             return True
         return self._local_solver is not None
-
-    @property
-    def local_solver_error(self) -> str | None:
-        return self._local_solver_error
 
     def close(self) -> None:
         if self._local_solver is not None:
@@ -71,10 +67,7 @@ class PlateSolverClient:
             return payload
 
         if not self.is_ready:
-            raise FocaleError(
-                "Local plate solver is not available. "
-                "Install with `pip install focale` on Python 3.12+."
-            )
+            raise FocaleError("Local plate solver failed to initialize.")
         return {"ok": True, "mode": "local"}
 
     def solve(
@@ -108,20 +101,12 @@ class PlateSolverClient:
         Path(cache).mkdir(parents=True, exist_ok=True)
 
         try:
-            from arcsecond_service_platesolver.solver import AstrometryServiceSolver
-        except ImportError as exc:
-            self._local_solver_error = str(exc)
-            self._local_solver = None
-            return
-
-        try:
             self._local_solver = AstrometryServiceSolver(
                 cache_dir=cache,
                 scales=set(self.scales),
             )
         except Exception as exc:  # pragma: no cover - third-party runtime failures
-            self._local_solver_error = str(exc)
-            self._local_solver = None
+            raise FocaleError(f"Local plate solver failed to initialize: {exc}") from exc
 
     def _solve_remote(self, payload: dict[str, Any]) -> PlateSolveResult:
         try:
@@ -141,16 +126,7 @@ class PlateSolverClient:
 
     def _solve_local(self, payload: dict[str, Any]) -> PlateSolveResult:
         if not self._local_solver:
-            detail = (
-                f" ({self._local_solver_error})"
-                if self._local_solver_error
-                else ""
-            )
-            raise FocaleError(
-                "Local plate solver is unavailable. "
-                "Install with `pip install focale` on Python 3.12+."
-                f"{detail}"
-            )
+            raise FocaleError("Local plate solver is unavailable.")
 
         result = self._local_solver.solve(
             payload["peaks_xy"],

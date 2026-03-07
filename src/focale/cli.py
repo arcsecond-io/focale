@@ -779,10 +779,6 @@ def platesolver_status(
     try:
         health = solver.health()
     except FocaleError as exc:
-        if solver.mode == "local" and solver.local_solver_error:
-            raise click.ClickException(
-                f"{exc} Local init error: {solver.local_solver_error}"
-            ) from exc
         raise click.ClickException(str(exc)) from exc
     finally:
         solver.close()
