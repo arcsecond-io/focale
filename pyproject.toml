@@ -28,7 +28,7 @@ classifiers = [
 ]
 dependencies = [
   "arcsecond>=3.7.3",
-  "arcsecond-service-platesolver-astrometry>=0.1.0",
+  "arcsecond-astrometry>=4.3.0",
   "click>=8.1",
   "cryptography>=42",
   "httpx>=0.27",

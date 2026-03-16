@@ -60,6 +60,8 @@ jobs:
             --name focale `
             --paths src `
             --collect-submodules arcsecond `
+            --collect-submodules astrometry `
+            --hidden-import astrometry_extension `
             --collect-submodules focale `
             src/focale/__main__.py
 

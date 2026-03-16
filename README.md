@@ -77,7 +77,7 @@ focale context use my-observatory
 
 ## Plate solving
 
-Plate solving is included with `pip install focale` — `arcsecond-service-platesolver-astrometry`
+Plate solving is included with `pip install focale` — `arcsecond-astrometry`
 is a mandatory dependency and ships native binaries for Windows, macOS, and Linux with no Docker
 or external tooling required.
 

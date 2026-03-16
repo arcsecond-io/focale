@@ -4,8 +4,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import astrometry
 import httpx
-from arcsecond_service_platesolver.solver import AstrometryServiceSolver
 
 from .exceptions import FocaleError
 
@@ -33,7 +33,7 @@ class PlateSolverClient:
         self.service_url = (service_url or "").rstrip("/") or None
         self.cache_dir = cache_dir
         self.scales = scales or [6]
-        self._local_solver: AstrometryServiceSolver | None = None
+        self._local_solver: astrometry.Solver | None = None
 
         if not self.service_url:
             self._init_local_solver()
@@ -95,16 +95,16 @@ class PlateSolverClient:
         return self._solve_local(payload)
 
     def _init_local_solver(self) -> None:
-        cache = self.cache_dir or str(
-            Path.home() / ".cache" / "focale" / "astrometry"
+        cache = (
+            Path(self.cache_dir)
+            if self.cache_dir
+            else Path.home() / ".cache" / "focale" / "astrometry"
         )
-        Path(cache).mkdir(parents=True, exist_ok=True)
+        cache.mkdir(parents=True, exist_ok=True)
 
         try:
-            self._local_solver = AstrometryServiceSolver(
-                cache_dir=cache,
-                scales=set(self.scales),
-            )
+            index_files = _index_files(cache, set(self.scales))
+            self._local_solver = astrometry.Solver(index_files)
         except Exception as exc:  # pragma: no cover - third-party runtime failures
             raise FocaleError(f"Local plate solver failed to initialize: {exc}") from exc
 
@@ -130,20 +130,19 @@ class PlateSolverClient:
 
         result = self._local_solver.solve(
             payload["peaks_xy"],
-            ra_deg=payload["ra_deg"],
-            dec_deg=payload["dec_deg"],
-            radius_deg=payload["radius_deg"],
-            lower_arcsec_per_pixel=payload["lower_arcsec_per_pixel"],
-            upper_arcsec_per_pixel=payload["upper_arcsec_per_pixel"],
+            size_hint=_size_hint(payload),
+            position_hint=_position_hint(payload),
+            solution_parameters=astrometry.SolutionParameters(),
         )
-        if not result.has_match:
+        if not result.has_match():
             return PlateSolveResult(status="no_match")
+        match = result.best_match()
         return PlateSolveResult(
             status="match",
-            center_ra_deg=result.center_ra_deg,
-            center_dec_deg=result.center_dec_deg,
-            scale_arcsec_per_pixel=result.scale_arcsec_per_pixel,
-            wcs_header=result.wcs_header,
+            center_ra_deg=match.center_ra_deg,
+            center_dec_deg=match.center_dec_deg,
+            scale_arcsec_per_pixel=match.scale_arcsec_per_pixel,
+            wcs_header={key: value for key, (value, _comment) in match.wcs_fields.items()},
         )
 
 
@@ -157,4 +156,63 @@ def _to_result(data: dict[str, Any]) -> PlateSolveResult:
         center_dec_deg=data.get("center_dec_deg"),
         scale_arcsec_per_pixel=data.get("scale_arcsec_per_pixel"),
         wcs_header=data.get("wcs_header"),
+    )
+
+
+def _index_files(cache_dir: Path, scales: set[int]) -> list[Path]:
+    invalid_scales = sorted(scale for scale in scales if scale < 0 or scale > 19)
+    if invalid_scales:
+        joined = ", ".join(str(scale) for scale in invalid_scales)
+        raise FocaleError(
+            f"Invalid astrometry scales: {joined}. Expected integers between 0 and 19."
+        )
+
+    index_files: list[Path] = []
+    light_scales = {scale for scale in scales if scale <= 6}
+    wide_scales = {scale for scale in scales if scale >= 7}
+
+    if light_scales:
+        index_files.extend(
+            astrometry.series_5200.index_files(
+                cache_directory=cache_dir,
+                scales=light_scales,
+            )
+        )
+    if wide_scales:
+        index_files.extend(
+            astrometry.series_4100.index_files(
+                cache_directory=cache_dir,
+                scales=wide_scales,
+            )
+        )
+    return index_files
+
+
+def _size_hint(payload: dict[str, Any]) -> astrometry.SizeHint | None:
+    lower = payload["lower_arcsec_per_pixel"]
+    upper = payload["upper_arcsec_per_pixel"]
+    if lower is None and upper is None:
+        return None
+    return astrometry.SizeHint(
+        lower_arcsec_per_pixel=(
+            astrometry.DEFAULT_LOWER_ARCSEC_PER_PIXEL if lower is None else lower
+        ),
+        upper_arcsec_per_pixel=(
+            astrometry.DEFAULT_UPPER_ARCSEC_PER_PIXEL if upper is None else upper
+        ),
+    )
+
+
+def _position_hint(payload: dict[str, Any]) -> astrometry.PositionHint | None:
+    ra_deg = payload["ra_deg"]
+    dec_deg = payload["dec_deg"]
+    radius_deg = payload["radius_deg"]
+    if ra_deg is None and dec_deg is None and radius_deg is None:
+        return None
+    if ra_deg is None or dec_deg is None:
+        raise FocaleError("Local plate solver position hint requires both RA and Dec.")
+    return astrometry.PositionHint(
+        ra_deg=ra_deg,
+        dec_deg=dec_deg,
+        radius_deg=180.0 if radius_deg is None else radius_deg,
     )
