@@ -69,17 +69,41 @@ jobs:
         id: innosetup
         shell: pwsh
         run: |
-          choco install innosetup --no-progress -y
-
           $candidates = @(
+            "$env:RUNNER_TEMP\InnoSetup\ISCC.exe",
             "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
             "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
           )
 
           $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          if (-not $iscc) {
+            $installer = Join-Path $env:RUNNER_TEMP "innosetup-6.7.1.exe"
+            $installDir = Join-Path $env:RUNNER_TEMP "InnoSetup"
+
+            Invoke-WebRequest `
+              -Uri "https://github.com/jrsoftware/issrc/releases/download/is-6_7_1/innosetup-6.7.1.exe" `
+              -OutFile $installer
+
+            $process = Start-Process `
+              -FilePath $installer `
+              -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=$installDir" `
+              -Wait `
+              -PassThru
+
+            if ($process.ExitCode -ne 0) {
+              throw "Inno Setup installer exited with code $($process.ExitCode)."
+            }
+
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+
           if (-not $iscc) {
             throw "Unable to locate ISCC.exe after installing Inno Setup."
           }
+
+          Write-Host "Using ISCC at: $iscc"
+          Write-Host "ISCC version: $((Get-Item $iscc).VersionInfo.FileVersion)"
 
           "path=$iscc" >> $env:GITHUB_OUTPUT
 
