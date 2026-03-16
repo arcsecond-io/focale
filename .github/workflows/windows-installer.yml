@@ -114,8 +114,18 @@ jobs:
             throw "PyInstaller output directory dist\\focale was not created."
           }
 
+          $sourceDir = (Resolve-Path "dist\focale").Path
+          $outputDir = Join-Path $PWD "dist\windows"
+          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+
+          Write-Host "Installer source dir: $sourceDir"
+          Write-Host "Installer output dir: $outputDir"
+          Get-ChildItem -Path $sourceDir -Recurse -File | Select-Object -First 50 FullName, Length
+
           & "${{ steps.innosetup.outputs.path }}" `
             /DMyAppVersion=${{ steps.version.outputs.value }} `
+            "/DMySourceDir=$sourceDir" `
+            "/DMyOutputDir=$outputDir" `
             packaging/windows/focale.iss
 
       - name: Upload installer

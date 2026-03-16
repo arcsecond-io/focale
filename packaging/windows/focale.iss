@@ -4,6 +4,12 @@
 #ifndef MyAppVersion
   #define MyAppVersion "0.2.0"
 #endif
+#ifndef MySourceDir
+  #define MySourceDir "dist\focale"
+#endif
+#ifndef MyOutputDir
+  #define MyOutputDir "dist\windows"
+#endif
 
 [Setup]
 AppId={{11A3125E-D7EA-487D-9998-67E95343F4A5}
@@ -19,7 +25,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ChangesEnvironment=yes
 Compression=lzma
 SolidCompression=yes
-OutputDir=dist\windows
+OutputDir={#MyOutputDir}
 OutputBaseFilename=Focale-Setup-{#MyAppVersion}
 WizardStyle=modern
 
@@ -27,7 +33,7 @@ WizardStyle=modern
 Name: "modifypath"; Description: "Add Focale to PATH"; GroupDescription: "Additional tasks:"
 
 [Files]
-Source: "dist\focale\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#MySourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\Focale"; Filename: "{app}\{#MyAppExeName}"
