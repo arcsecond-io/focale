@@ -5,13 +5,26 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (for example refs/tags/v0.2.0)"
+        required: false
+        default: ""
+      version:
+        description: "Version string to publish in the installer and release asset"
+        required: false
+        default: ""
 
 jobs:
   build-installer:
     runs-on: windows-latest
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -21,7 +34,11 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}"
+          $version = "${{ inputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = "${{ github.ref_name }}"
+          }
+          if ($version.StartsWith("refs/tags/")) { $version = $version.Substring(10) }
           if ($version.StartsWith("v")) { $version = $version.Substring(1) }
           if ([string]::IsNullOrWhiteSpace($version)) { $version = "0.2.0-dev" }
           "value=$version" >> $env:GITHUB_OUTPUT
@@ -60,3 +77,11 @@ jobs:
         with:
           name: focale-windows-installer-${{ steps.version.outputs.value }}
           path: dist/windows/*.exe
+
+      - name: Publish installer to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || inputs.version != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.value }}
+          files: dist/windows/*.exe
+          generate_release_notes: true
