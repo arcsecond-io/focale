@@ -66,13 +66,33 @@ jobs:
             src/focale/__main__.py
 
       - name: Install Inno Setup
+        id: innosetup
         shell: pwsh
-        run: choco install innosetup --no-progress -y
+        run: |
+          choco install innosetup --no-progress -y
+
+          $candidates = @(
+            "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          )
+
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            throw "Unable to locate ISCC.exe after installing Inno Setup."
+          }
+
+          "path=$iscc" >> $env:GITHUB_OUTPUT
 
       - name: Build installer
         shell: pwsh
         run: |
-          iscc /DMyAppVersion=${{ steps.version.outputs.value }} packaging/windows/focale.iss
+          if (-not (Test-Path "dist\focale")) {
+            throw "PyInstaller output directory dist\\focale was not created."
+          }
+
+          & "${{ steps.innosetup.outputs.path }}" `
+            /DMyAppVersion=${{ steps.version.outputs.value }} `
+            packaging/windows/focale.iss
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
