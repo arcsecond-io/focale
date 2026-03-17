@@ -1,6 +1,6 @@
 # Focale
 
-Focale is a thin desktop/CLI bootstrap for Arcsecond users that:
+Focale is a small desktop/CLI bootstrap for Arcsecond users that:
 
 - logs in with the user's Arcsecond account
 - creates and stores a local Hub agent identity
@@ -29,9 +29,15 @@ focale context use personal
 focale connect --hub-url wss://hub.arcsecond.io/ws/agent
 ```
 
+### Desktop GUI
+
+`python -m focale` launches the PySide6 desktop app when no CLI arguments are given.
+The existing `focale` console script remains available for terminal-driven workflows.
+
 ### Windows installer
 
-This repository includes a bootstrap for building a Windows installer from CI. The installer packages the `focale` executable and can optionally add it to `PATH`.
+This repository includes a bootstrap for building a Windows installer from CI. The installer packages
+the PySide6 desktop app as `focale.exe`.
 
 See:
 
