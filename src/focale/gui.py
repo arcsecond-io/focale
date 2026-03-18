@@ -3,15 +3,15 @@ from __future__ import annotations
 import json
 import sys
 import traceback
-from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal, Slot
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
-    QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -23,7 +23,10 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QRadioButton,
     QStatusBar,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -31,7 +34,7 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from . import services
-from .exceptions import FocaleError
+from .exceptions import ArcsecondGatewayError, FocaleError
 
 WorkerFunc = Callable[[Callable[[str], None]], object]
 
@@ -46,18 +49,61 @@ class WorkerSignals(QObject):
 class FunctionWorker(QRunnable):
     def __init__(self, fn: WorkerFunc) -> None:
         super().__init__()
+        self.setAutoDelete(False)
         self.fn = fn
         self.signals = WorkerSignals()
 
     def run(self) -> None:
         try:
             result = self.fn(self.signals.log.emit)
-        except Exception:
-            self.signals.error.emit(traceback.format_exc())
+        except Exception as exc:
+            if isinstance(exc, (FocaleError, ArcsecondGatewayError)):
+                self.signals.error.emit(str(exc))
+            else:
+                self.signals.error.emit(traceback.format_exc())
         else:
             self.signals.result.emit(result)
         finally:
             self.signals.finished.emit()
+
+
+class EnvironmentDialog(QDialog):
+    def __init__(self, *, current_environment: str | None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Choose Environment")
+        self.setModal(True)
+        self.resize(420, 220)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+
+        title = QLabel("Choose where Focale should connect")
+        title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        layout.addWidget(title)
+
+        subtitle = QLabel(
+            "Normal users should use Arcsecond Cloud. Staging is only for testing."
+        )
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+
+        self.production_radio = QRadioButton("Arcsecond Cloud")
+        self.staging_radio = QRadioButton("Arcsecond Staging")
+        self.production_radio.setChecked(current_environment != "staging")
+        self.staging_radio.setChecked(current_environment == "staging")
+        layout.addWidget(self.production_radio)
+        layout.addWidget(self.staging_radio)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_environment(self) -> str:
+        if self.staging_radio.isChecked():
+            return "staging"
+        return "production"
 
 
 class FocaleWindow(QMainWindow):
@@ -65,10 +111,15 @@ class FocaleWindow(QMainWindow):
         super().__init__()
         self.thread_pool = QThreadPool(self)
         self._busy_count = 0
+        self._active_workers: dict[
+            int, tuple[FunctionWorker, str, Callable[[Any], None] | None]
+        ] = {}
+        self._settings = services.user_settings()
 
         self.setWindowTitle(f"Focale {__version__}")
         self.resize(980, 760)
         self.setStatusBar(QStatusBar(self))
+        self._build_menu()
 
         root = QWidget(self)
         self.setCentralWidget(root)
@@ -99,72 +150,62 @@ class FocaleWindow(QMainWindow):
 
         self._refresh_status_summary()
 
+    def _build_menu(self) -> None:
+        app_menu = self.menuBar().addMenu("Focale")
+        switch_environment_action = QAction("Switch Environment...", self)
+        switch_environment_action.triggered.connect(self._switch_environment)
+        app_menu.addAction(switch_environment_action)
+
     def _build_arcsecond_tab(self) -> QWidget:
         tab = QWidget()
-        layout = QVBoxLayout(tab)
+        layout = QGridLayout(tab)
         layout.setSpacing(12)
+        layout.setColumnStretch(0, 3)
+        layout.setColumnStretch(1, 2)
+        layout.setRowStretch(3, 1)
 
-        session_box = QGroupBox("Session")
+        session_box = QGroupBox("Arcsecond Account")
         session_form = QFormLayout(session_box)
-        self.api_name_input = QLineEdit("cloud")
-        self.api_server_input = QLineEdit()
-        self.username_input = QLineEdit()
-        self.auth_mode_input = QComboBox()
-        self.auth_mode_input.addItems(["password", "access-key"])
+        session_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        session_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.username_input = QLineEdit(self._settings.get("username") or "")
+        self.username_input.setMinimumWidth(220)
         self.secret_input = QLineEdit()
+        self.secret_input.setMinimumWidth(220)
         self.secret_input.setEchoMode(QLineEdit.Password)
-        session_form.addRow("API profile", self.api_name_input)
-        session_form.addRow("API server", self.api_server_input)
+        self.secret_input.setPlaceholderText("Only needed when signing in again")
+        self.environment_label = QLabel(
+            str(self._settings.get("environment_label") or "Arcsecond Cloud")
+        )
         session_form.addRow("Username", self.username_input)
-        session_form.addRow("Auth mode", self.auth_mode_input)
-        session_form.addRow("Password / Access Key", self.secret_input)
+        session_form.addRow("Password", self.secret_input)
+        session_form.addRow("Environment", self.environment_label)
 
         session_buttons = QHBoxLayout()
-        login_button = QPushButton("Login")
+        login_button = QPushButton("Sign In")
         login_button.clicked.connect(self._login)
-        refresh_button = QPushButton("Refresh Status")
+        refresh_button = QPushButton("Refresh State")
         refresh_button.clicked.connect(self._refresh_status)
         session_buttons.addWidget(login_button)
         session_buttons.addWidget(refresh_button)
         session_buttons.addStretch(1)
         session_form.addRow("", session_buttons)
-        layout.addWidget(session_box)
-
-        context_box = QGroupBox("Context")
-        context_form = QFormLayout(context_box)
-        self.context_target_input = QLineEdit()
-        self.context_target_input.setPlaceholderText("personal or organisation subdomain")
-        context_form.addRow("Default context", self.context_target_input)
-
-        context_buttons = QHBoxLayout()
-        list_contexts_button = QPushButton("List Contexts")
-        list_contexts_button.clicked.connect(self._list_contexts)
-        set_context_button = QPushButton("Use Context")
-        set_context_button.clicked.connect(self._set_context)
-        context_buttons.addWidget(list_contexts_button)
-        context_buttons.addWidget(set_context_button)
-        context_buttons.addStretch(1)
-        context_form.addRow("", context_buttons)
-        layout.addWidget(context_box)
+        session_note = QLabel(
+            "Focale keeps your Arcsecond session locally, so you usually only need to sign in once."
+        )
+        session_note.setWordWrap(True)
+        session_form.addRow("", session_note)
+        layout.addWidget(session_box, 0, 0)
 
         hub_box = QGroupBox("Hub")
         hub_form = QFormLayout(hub_box)
-        self.hub_url_input = QLineEdit()
-        self.hub_url_input.setPlaceholderText("wss://hub.arcsecond.io/ws/agent")
-        self.organisation_input = QLineEdit()
-        self.organisation_input.setPlaceholderText("Optional organisation override")
-        self.workspace_id_input = QLineEdit()
-        self.workspace_id_input.setPlaceholderText("Optional workspace override")
-        self.force_refresh_checkbox = QCheckBox("Force JWT refresh during doctor")
-        self.reenroll_checkbox = QCheckBox("Force re-enrollment")
-        self.discover_alpaca_checkbox = QCheckBox("Discover and register Alpaca servers")
-        self.discover_alpaca_checkbox.setChecked(True)
-        hub_form.addRow("Hub URL", self.hub_url_input)
-        hub_form.addRow("Organisation", self.organisation_input)
-        hub_form.addRow("Workspace ID", self.workspace_id_input)
-        hub_form.addRow("", self.force_refresh_checkbox)
-        hub_form.addRow("", self.reenroll_checkbox)
-        hub_form.addRow("", self.discover_alpaca_checkbox)
+        hub_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        hub_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        hub_note = QLabel(
+            "The Hub connection follows your selected Arcsecond environment automatically."
+        )
+        hub_note.setWordWrap(True)
+        hub_form.addRow("", hub_note)
 
         hub_buttons = QHBoxLayout()
         doctor_button = QPushButton("Run Doctor")
@@ -175,13 +216,36 @@ class FocaleWindow(QMainWindow):
         hub_buttons.addWidget(connect_button)
         hub_buttons.addStretch(1)
         hub_form.addRow("", hub_buttons)
-        layout.addWidget(hub_box)
+        layout.addWidget(hub_box, 1, 0)
 
-        self.status_summary = QPlainTextEdit()
-        self.status_summary.setReadOnly(True)
-        self.status_summary.setPlaceholderText("Current Focale state summary.")
-        self.status_summary.setMinimumHeight(180)
-        layout.addWidget(self.status_summary)
+        alpaca_box = QGroupBox("Local Alpaca")
+        alpaca_form = QFormLayout(alpaca_box)
+        self.local_alpaca_summary = QLabel("No local scan yet.")
+        self.local_alpaca_summary.setWordWrap(True)
+        alpaca_buttons = QHBoxLayout()
+        discover_alpaca_button = QPushButton("Check Local Alpaca Servers")
+        discover_alpaca_button.clicked.connect(self._discover_local_alpaca)
+        register_alpaca_button = QPushButton("Register Server To Focale")
+        register_alpaca_button.clicked.connect(self._register_local_alpaca)
+        alpaca_buttons.addWidget(discover_alpaca_button)
+        alpaca_buttons.addWidget(register_alpaca_button)
+        alpaca_buttons.addStretch(1)
+        alpaca_form.addRow("", self.local_alpaca_summary)
+        alpaca_form.addRow("", self._wrap_layout(alpaca_buttons))
+        layout.addWidget(alpaca_box, 2, 0)
+
+        status_box = QGroupBox("State")
+        status_layout = QVBoxLayout(status_box)
+        self.state_table = QTableWidget(0, 2)
+        self.state_table.setHorizontalHeaderLabels(["Property", "Value"])
+        self.state_table.verticalHeader().setVisible(False)
+        self.state_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.state_table.setSelectionMode(QTableWidget.NoSelection)
+        self.state_table.horizontalHeader().setStretchLastSection(True)
+        self.state_table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft)
+        self.state_table.setMinimumWidth(320)
+        status_layout.addWidget(self.state_table)
+        layout.addWidget(status_box, 0, 1, 3, 1)
 
         return tab
 
@@ -265,81 +329,103 @@ class FocaleWindow(QMainWindow):
         on_result: Callable[[Any], None] | None = None,
     ) -> None:
         worker = FunctionWorker(fn)
-        worker.signals.log.connect(lambda message: self._append_log(message))
-        worker.signals.error.connect(
-            lambda message: self._handle_error(label, message)
-        )
-        worker.signals.result.connect(
-            partial(self._handle_result, label, on_result)
-        )
+        self._active_workers[id(worker.signals)] = (worker, label, on_result)
+        worker.signals.log.connect(self._append_log)
+        worker.signals.error.connect(self._handle_worker_error)
+        worker.signals.result.connect(self._handle_worker_result)
         worker.signals.finished.connect(self._finish_action)
         self._busy_count += 1
         self.statusBar().showMessage(f"{label} in progress...")
         self.thread_pool.start(worker)
 
-    def _handle_result(
+    def _worker_context(
         self,
-        label: str,
-        on_result: Callable[[Any], None] | None,
-        payload: Any,
-    ) -> None:
+    ) -> tuple[FunctionWorker, str, Callable[[Any], None] | None] | None:
+        sender = self.sender()
+        if sender is None:
+            return None
+        return self._active_workers.get(id(sender))
+
+    @Slot(object)
+    def _handle_worker_result(self, payload: Any) -> None:
+        context = self._worker_context()
+        if context is None:
+            return
+        _worker, label, on_result = context
         self._append_log(f"{label} completed.")
         self._append_log(self._format_payload(payload))
         if on_result is not None:
             on_result(payload)
 
+    @Slot(str)
+    def _handle_worker_error(self, message: str) -> None:
+        context = self._worker_context()
+        if context is None:
+            return
+        _worker, label, _on_result = context
+        self._handle_error(label, message)
+
     def _handle_error(self, label: str, message: str) -> None:
         self._append_log(f"{label} failed.")
         self._append_log(message)
+        self._refresh_status_summary()
         QMessageBox.critical(self, "Focale", f"{label} failed.\n\n{message}")
 
+    @Slot()
     def _finish_action(self) -> None:
+        sender = self.sender()
+        if sender is not None:
+            self._active_workers.pop(id(sender), None)
         self._busy_count = max(0, self._busy_count - 1)
         if self._busy_count == 0:
             self.statusBar().showMessage("Ready")
 
+    @Slot(str)
     def _append_log(self, message: str) -> None:
         self.log_output.appendPlainText(message)
 
     def _format_payload(self, payload: Any) -> str:
         return json.dumps(payload, indent=2, sort_keys=True, default=str)
 
-    def _api_name(self) -> str:
-        return self.api_name_input.text().strip() or "cloud"
-
     def _api_server(self) -> str | None:
-        value = self.api_server_input.text().strip()
+        value = str(self._settings.get("api_server") or "").strip()
+        return value or None
+
+    def _hub_url(self) -> str | None:
+        value = str(self._settings.get("hub_url") or "").strip()
         return value or None
 
     def _login(self) -> None:
-        api_name = self._api_name()
         api_server = self._api_server()
         username = self.username_input.text().strip()
         secret = self.secret_input.text()
-        auth_mode = self.auth_mode_input.currentText()
         if not username or not secret:
-            QMessageBox.warning(self, "Focale", "Username and password/access key are required.")
+            QMessageBox.warning(self, "Focale", "Username and password are required.")
             return
 
         self._start_action(
-            "Login",
+            "Sign in",
             lambda _log: services.login(
-                api_name=api_name,
                 api_server=api_server,
                 username=username,
                 secret=secret,
-                auth_mode=auth_mode,
             ),
-            on_result=lambda _payload: self._refresh_status_summary(),
+            on_result=self._after_login,
         )
 
+    def _after_login(self, _payload: Any) -> None:
+        self.secret_input.clear()
+        self._settings = services.user_settings()
+        self.environment_label.setText(
+            str(self._settings.get("environment_label") or "Arcsecond Cloud")
+        )
+        self._refresh_status_summary()
+
     def _refresh_status(self) -> None:
-        api_name = self._api_name()
         api_server = self._api_server()
         self._start_action(
-            "Status refresh",
+            "Refresh state",
             lambda _log: services.status(
-                api_name=api_name,
                 api_server=api_server,
             ),
             on_result=self._set_status_summary,
@@ -348,89 +434,164 @@ class FocaleWindow(QMainWindow):
     def _refresh_status_summary(self) -> None:
         try:
             payload = services.status(
-                api_name=self._api_name(),
                 api_server=self._api_server(),
             )
         except Exception as exc:
-            self.status_summary.setPlainText(str(exc))
+            self.state_table.setRowCount(1)
+            label_item = QTableWidgetItem("Status")
+            value_item = QTableWidgetItem(str(exc))
+            label_item.setFlags(Qt.ItemIsEnabled)
+            value_item.setFlags(Qt.ItemIsEnabled)
+            self.state_table.setItem(0, 0, label_item)
+            self.state_table.setItem(0, 1, value_item)
         else:
             self._set_status_summary(payload)
 
     def _set_status_summary(self, payload: Any) -> None:
-        self.status_summary.setPlainText(self._format_payload(payload))
-
-    def _list_contexts(self) -> None:
-        api_name = self._api_name()
-        api_server = self._api_server()
-        self._start_action(
-            "List contexts",
-            lambda _log: services.list_contexts(
-                api_name=api_name,
-                api_server=api_server,
-            ),
-        )
-
-    def _set_context(self) -> None:
-        api_name = self._api_name()
-        api_server = self._api_server()
-        target = self.context_target_input.text().strip()
-        if not target:
-            QMessageBox.warning(self, "Focale", "Enter a context target first.")
-            return
-
-        self._start_action(
-            "Set context",
-            lambda _log: services.set_default_context(
-                api_name=api_name,
-                api_server=api_server,
-                target=target,
-            ),
-            on_result=lambda _payload: self._refresh_status_summary(),
-        )
+        rows = [
+            ("Signed in", "Yes" if payload.get("logged_in") else "No"),
+            ("Username", str(payload.get("username") or "Not signed in")),
+            ("Environment", str(payload.get("environment_label") or "Arcsecond Cloud")),
+            ("Stored installations", str(len(payload.get("installations") or {}))),
+            ("Known Alpaca servers", str(payload.get("known_alpaca_servers") or 0)),
+            ("Focale version", str(payload.get("focale_version") or __version__)),
+        ]
+        auth_error = payload.get("auth_error")
+        if auth_error:
+            rows.insert(1, ("Session", str(auth_error)))
+        self.state_table.setRowCount(len(rows))
+        for row_index, (label, value) in enumerate(rows):
+            label_item = QTableWidgetItem(label)
+            value_item = QTableWidgetItem(value)
+            label_item.setFlags(Qt.ItemIsEnabled)
+            value_item.setFlags(Qt.ItemIsEnabled)
+            self.state_table.setItem(row_index, 0, label_item)
+            self.state_table.setItem(row_index, 1, value_item)
 
     def _doctor(self) -> None:
-        api_name = self._api_name()
         api_server = self._api_server()
-        hub_url = self._clean(self.hub_url_input)
-        organisation = self._clean(self.organisation_input)
-        workspace_id = self._clean(self.workspace_id_input)
-        force_refresh = self.force_refresh_checkbox.isChecked()
-        re_enroll = self.reenroll_checkbox.isChecked()
+        hub_url = self._hub_url()
         self._start_action(
             "Doctor",
             lambda log: services.doctor(
-                api_name=api_name,
                 api_server=api_server,
                 hub_url=hub_url,
-                organisation=organisation,
-                workspace_id=workspace_id,
-                force_refresh=force_refresh,
-                re_enroll=re_enroll,
+                organisation=None,
+                workspace_id=None,
+                force_refresh=False,
+                re_enroll=False,
                 echo=log,
             ),
         )
 
     def _connect_once(self) -> None:
-        api_name = self._api_name()
         api_server = self._api_server()
-        hub_url = self._clean(self.hub_url_input)
-        organisation = self._clean(self.organisation_input)
-        workspace_id = self._clean(self.workspace_id_input)
-        re_enroll = self.reenroll_checkbox.isChecked()
-        discover_alpaca = self.discover_alpaca_checkbox.isChecked()
+        hub_url = self._hub_url()
         self._start_action(
             "Connect once",
             lambda log: services.connect_once(
-                api_name=api_name,
                 api_server=api_server,
                 hub_url=hub_url,
-                organisation=organisation,
-                workspace_id=workspace_id,
-                re_enroll=re_enroll,
-                discover_alpaca=discover_alpaca,
+                organisation=None,
+                workspace_id=None,
+                re_enroll=False,
+                discover_alpaca=False,
                 echo=log,
             ),
         )
+
+    def _discover_local_alpaca(self) -> None:
+        self._start_action(
+            "Check local Alpaca servers",
+            lambda _log: services.discover_local_alpaca(),
+            on_result=self._set_local_alpaca_summary,
+        )
+
+    def _register_local_alpaca(self) -> None:
+        api_server = self._api_server()
+        self._start_action(
+            "Register local Alpaca servers",
+            lambda log: services.register_local_alpaca(
+                api_server=api_server,
+                echo=log,
+            ),
+            on_result=self._after_register_local_alpaca,
+        )
+
+    def _after_register_local_alpaca(self, payload: Any) -> None:
+        self._set_local_alpaca_summary(payload)
+        self._refresh_status_summary()
+
+    def _set_local_alpaca_summary(self, payload: Any) -> None:
+        count = int(payload.get("count", payload.get("discovered", 0)) or 0)
+        if count == 0:
+            self.local_alpaca_summary.setText("No local Alpaca servers found.")
+            return
+
+        servers = payload.get("servers") or []
+        names = ", ".join(
+            str(server.get("name") or server.get("address") or "Unknown")
+            for server in servers[:3]
+            if isinstance(server, dict)
+        )
+        extra = ""
+        if len(servers) > 3:
+            extra = f" and {len(servers) - 3} more"
+
+        registration = ""
+        if "registered" in payload or "already_registered" in payload:
+            registration = (
+                f" Registered: {payload.get('registered', 0)},"
+                f" already registered: {payload.get('already_registered', 0)}."
+            )
+
+        devices = ""
+        if "devices_registered" in payload or "devices_already_registered" in payload:
+            devices = (
+                f" Devices: {payload.get('devices_registered', 0)} new,"
+                f" {payload.get('devices_already_registered', 0)} already known."
+            )
+
+        resources = ""
+        if (
+            "sites_created" in payload
+            or "telescopes_created" in payload
+            or "equipments_created" in payload
+        ):
+            resources = (
+                f" Resources: {payload.get('sites_created', 0)} site(s),"
+                f" {payload.get('telescopes_created', 0)} telescope(s),"
+                f" {payload.get('equipments_created', 0)} equipment item(s) created."
+            )
+
+        self.local_alpaca_summary.setText(
+            f"Found {count} local server(s): {names}{extra}.{registration}{devices}{resources}"
+        )
+
+    def _switch_environment(self) -> None:
+        dialog = EnvironmentDialog(
+            current_environment=self._settings.get("environment"),
+            parent=self,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        payload = services.select_environment(dialog.selected_environment())
+        self._settings = services.user_settings()
+        self.environment_label.setText(
+            str(self._settings.get("environment_label") or "Arcsecond Cloud")
+        )
+        self.secret_input.clear()
+        self.local_alpaca_summary.setText("No local scan yet.")
+        self._append_log("Environment updated.")
+        self._append_log(self._format_payload(payload))
+        self._refresh_status_summary()
+        if payload.get("changed"):
+            QMessageBox.information(
+                self,
+                "Focale",
+                "Environment switched. Sign in again before connecting or registering equipment.",
+            )
 
     def _platesolver_status(self) -> None:
         service_url = self._clean(self.solver_service_url_input)
@@ -511,6 +672,12 @@ class FocaleWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
+    settings = services.user_settings()
+    if settings.get("environment") is None:
+        dialog = EnvironmentDialog(current_environment=None)
+        if dialog.exec() != QDialog.Accepted:
+            return 0
+        services.select_environment(dialog.selected_environment())
     window = FocaleWindow()
     window.show()
     return app.exec()

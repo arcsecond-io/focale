@@ -2,13 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit, urlunsplit
 
 from . import __version__
 from .agent_auth import AgentKeypair
-from .alpaca import discover_alpaca_servers, normalize_alpaca_address
+from .alpaca import (
+    ConfiguredAlpacaDevice,
+    DiscoveredAlpacaServer,
+    discover_alpaca_servers,
+    get_configured_devices,
+    get_telescope_site_coordinates,
+    normalize_alpaca_address,
+)
 from .arcsecond_client import ArcsecondGateway
 from .exceptions import ArcsecondGatewayError, FocaleError
 from .hub import HubClient
@@ -16,6 +25,35 @@ from .platesolver import PlateSolverClient
 from .state import AlpacaServerRecord, FocaleState, InstallationRecord
 
 Logger = Callable[[str], None]
+
+
+ENVIRONMENT_PRESETS: dict[str, dict[str, str]] = {
+    "production": {
+        "label": "Arcsecond Cloud",
+        "api_server": "https://api.arcsecond.io",
+        "hub_url": "wss://hub.arcsecond.io/ws/agent",
+    },
+    "staging": {
+        "label": "Arcsecond Staging",
+        "api_server": "https://api.arcsecond.dev",
+        "hub_url": "wss://hub.arcsecond.dev/ws/agent",
+    },
+}
+
+SITE_SCOPED_DEVICE_PATHS: dict[str, str] = {
+    "Dome": "enclosures",
+    "SafetyMonitor": "safetymonitors",
+    "ObservingConditions": "observingconditions",
+}
+
+TELESCOPE_SCOPED_DEVICE_PATHS: dict[str, str] = {
+    "Camera": "cameras",
+    "FilterWheel": "filterwheels",
+    "Rotator": "rotators",
+    "Focuser": "focusers",
+    "Switch": "switches",
+    "CoverCalibrator": "covercalibrators",
+}
 
 
 def _utcnow() -> str:
@@ -26,6 +64,34 @@ def _scope(organisation: str | None, username: str) -> tuple[str, str]:
     if organisation:
         return "organisation", organisation
     return "profile", username
+
+
+def environment_ids() -> list[str]:
+    return list(ENVIRONMENT_PRESETS.keys())
+
+
+def environment_label(environment: str | None) -> str:
+    if environment and environment in ENVIRONMENT_PRESETS:
+        return ENVIRONMENT_PRESETS[environment]["label"]
+    return "Custom"
+
+
+def infer_environment(state: FocaleState) -> str | None:
+    for environment, preset in ENVIRONMENT_PRESETS.items():
+        if (
+            state.api_server == preset["api_server"]
+            and normalize_hub_url(state.hub_url) == normalize_hub_url(preset["hub_url"])
+        ):
+            return environment
+    return None
+
+
+def environment_defaults(environment: str | None) -> dict[str, str]:
+    env_key = environment or "production"
+    preset = ENVIRONMENT_PRESETS.get(env_key)
+    if preset is None:
+        raise FocaleError(f"Unknown environment `{env_key}`.")
+    return dict(preset)
 
 
 def context_label(organisation: str | None) -> str:
@@ -46,12 +112,46 @@ def resolve_context_organisation(
 
 
 def resolve_hub_url(state: FocaleState, hub_url: str | None) -> str:
-    resolved = hub_url or state.hub_url
+    resolved = normalize_hub_url(hub_url) if hub_url else normalize_hub_url(state.hub_url)
     if not resolved:
         raise FocaleError(
             "No Hub URL is configured. Provide one before connecting or running diagnostics."
         )
     return resolved
+
+
+def normalize_hub_url(hub_url: str | None) -> str | None:
+    if hub_url is None:
+        return None
+
+    raw = hub_url.strip()
+    if not raw:
+        return None
+
+    if raw.startswith("//"):
+        raw = f"wss:{raw}"
+    elif "://" not in raw:
+        raw = f"wss://{raw}"
+
+    parsed = urlsplit(raw)
+    scheme = parsed.scheme.lower()
+    if scheme == "http":
+        scheme = "ws"
+    elif scheme == "https":
+        scheme = "wss"
+    elif scheme not in {"ws", "wss"}:
+        raise FocaleError(
+            "Hub URL must use ws://, wss://, http://, or https://."
+        )
+
+    if not parsed.netloc:
+        raise FocaleError("Hub URL must include a host.")
+
+    path = parsed.path or "/ws/agent"
+    if path == "/":
+        path = "/ws/agent"
+
+    return urlunsplit((scheme, parsed.netloc, path, parsed.query, parsed.fragment))
 
 
 def parse_scales(scales: str) -> list[int]:
@@ -95,12 +195,13 @@ def load_peaks_file(path: Path) -> list[list[float]]:
 def _gateway(
     *,
     state: FocaleState,
-    api_name: str,
     api_server: str | None,
 ) -> ArcsecondGateway:
+    if api_server and api_server != state.api_server:
+        state.api_server = api_server
+        state.save()
     return ArcsecondGateway(
         state=state,
-        api_name=api_name,
         api_server=api_server,
     )
 
@@ -241,47 +342,99 @@ def _discover_and_register_alpaca(
 
 def login(
     *,
-    api_name: str,
     api_server: str | None,
     username: str,
     secret: str,
-    auth_mode: str,
 ) -> dict[str, Any]:
     state = FocaleState.load()
-    gateway = _gateway(state=state, api_name=api_name, api_server=api_server)
-
-    if auth_mode == "password":
-        gateway.login_with_password(username=username, password=secret)
-    elif auth_mode == "access-key":
-        gateway.login_with_access_key(username=username, access_key=secret)
-    else:
-        raise FocaleError(f"Unsupported auth mode `{auth_mode}`.")
+    gateway = _gateway(state=state, api_server=api_server)
+    gateway.login_with_password(username=username, password=secret)
 
     return {
         "ok": True,
         "username": gateway.username,
-        "auth_mode": auth_mode,
+        "auth_mode": "password",
         "api_server": gateway.api_server,
+        "environment": state.environment or infer_environment(state),
+    }
+
+
+def user_settings() -> dict[str, Any]:
+    state = FocaleState.load()
+    inferred_environment = infer_environment(state)
+    environment = state.environment or inferred_environment
+    effective_environment = environment or "production"
+    defaults = environment_defaults(effective_environment)
+    api_server = state.api_server or defaults["api_server"]
+    hub_url = state.hub_url or defaults["hub_url"]
+    username = state.auth.username if state.auth else None
+    return {
+        "username": username,
+        "api_server": api_server,
+        "hub_url": hub_url,
+        "environment": environment,
+        "environment_label": environment_label(effective_environment),
+        "logged_in": state.auth is not None,
+    }
+
+
+def select_environment(environment: str) -> dict[str, Any]:
+    preset = environment_defaults(environment)
+    state = FocaleState.load()
+    previous_environment = state.environment or infer_environment(state)
+    changed = (
+        previous_environment != environment
+        or state.api_server != preset["api_server"]
+        or normalize_hub_url(state.hub_url) != normalize_hub_url(preset["hub_url"])
+    )
+
+    state.environment = environment
+    state.api_server = preset["api_server"]
+    state.hub_url = preset["hub_url"]
+    if changed:
+        state.clear_remote_state()
+    state.save()
+
+    return {
+        "ok": True,
+        "changed": changed,
+        "environment": environment,
+        "environment_label": environment_label(environment),
+        "api_server": state.api_server,
+        "hub_url": state.hub_url,
     }
 
 
 def status(
     *,
-    api_name: str,
     api_server: str | None,
 ) -> dict[str, Any]:
     state = FocaleState.load()
-    gateway = _gateway(state=state, api_name=api_name, api_server=api_server)
-    return {
+    gateway = _gateway(state=state, api_server=api_server)
+    auth_error: str | None = None
+
+    session = state.auth
+    if session and session.auth_type == "token":
+        access_exp = int(session.access_exp or 0)
+        now = int(time.time())
+        if not access_exp or now >= access_exp - 30:
+            try:
+                gateway.ensure_authenticated()
+            except ArcsecondGatewayError as exc:
+                auth_error = str(exc)
+                state = FocaleState.load()
+                gateway = _gateway(state=state, api_server=api_server)
+
+    current_environment = state.environment or infer_environment(state)
+    payload = {
         "focale_version": __version__,
-        "api_name": api_name,
         "api_server": gateway.api_server,
-        "config_path": str(gateway.config.file_path()),
+        "environment": current_environment,
+        "environment_label": environment_label(current_environment),
         "logged_in": gateway.is_logged_in,
         "username": gateway.username or None,
         "auth_type": gateway.auth_type,
         "has_refresh_token": gateway.has_refresh_token,
-        "has_access_key": gateway.has_access_key,
         "state_path": str(state.state_file()),
         "workspace_id": state.workspace_id,
         "hub_url": state.hub_url,
@@ -295,15 +448,578 @@ def status(
             for key, record in sorted(state.installations.items())
         },
     }
+    if auth_error:
+        payload["auth_error"] = auth_error
+    return payload
+
+
+def discover_local_alpaca() -> dict[str, Any]:
+    discovered = discover_alpaca_servers()
+    return {
+        "ok": True,
+        "count": len(discovered),
+        "servers": [
+            {
+                "name": server.name,
+                "address": server.address,
+                "manufacturer": server.manufacturer,
+            }
+            for server in discovered
+        ],
+    }
+
+
+def _default_site_name(server: DiscoveredAlpacaServer) -> str:
+    base = server.name.strip() or "Focale"
+    if base.lower().endswith("observatory"):
+        return base
+    return f"{base} Observatory"
+
+
+def _default_telescope_name(server: DiscoveredAlpacaServer) -> str:
+    base = server.name.strip() or "Focale"
+    if base.lower().endswith("telescope"):
+        return base
+    return f"{base} Telescope"
+
+
+def _default_equipment_name(device: ConfiguredAlpacaDevice) -> str:
+    name = device.name.strip()
+    if name:
+        return name
+    return f"{device.type} {device.number}"
+
+
+def _find_by_name(items: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
+    for item in items:
+        if str(item.get("name") or "").strip() == name:
+            return item
+    return None
+
+
+def _find_site_by_uuid(
+    sites: list[dict[str, Any]],
+    site_uuid: str | None,
+) -> dict[str, Any] | None:
+    if not site_uuid:
+        return None
+    for site in sites:
+        if str(site.get("uuid") or "") == site_uuid:
+            return site
+    return None
+
+
+def _coordinates_payload(
+    longitude: float,
+    latitude: float,
+    height: float | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "longitude": longitude,
+        "latitude": latitude,
+    }
+    if height is not None:
+        payload["height"] = height
+    return payload
+
+
+def _ensure_remote_server(
+    *,
+    gateway: ArcsecondGateway,
+    state: FocaleState,
+    server: DiscoveredAlpacaServer,
+    existing_by_address: dict[str, dict[str, Any]],
+    organisation: str | None,
+    echo: Logger,
+) -> tuple[dict[str, Any], bool]:
+    normalized_address = normalize_alpaca_address(server.address)
+    remote_match = existing_by_address.get(normalized_address)
+
+    username = gateway.require_username()
+    scope_type, scope_value = _scope(organisation, username)
+    cached = state.get_alpaca_server(
+        scope_type=scope_type,
+        scope_value=scope_value,
+        address=normalized_address,
+    )
+    now = _utcnow()
+
+    if remote_match is None:
+        remote_match = gateway.create_alpaca_server(
+            name=server.name,
+            address=normalized_address,
+            manufacturer=server.manufacturer,
+            organisation=organisation,
+        )
+        existing_by_address[normalized_address] = remote_match
+        created = True
+        echo(f"Registered ASCOM Remote server: {server.name} ({normalized_address})")
+    else:
+        created = False
+
+    remote_uuid = remote_match.get("uuid")
+    state.set_alpaca_server(
+        AlpacaServerRecord(
+            scope_type=scope_type,
+            scope_value=scope_value,
+            address=normalized_address,
+            name=str(remote_match.get("name") or server.name),
+            manufacturer=(
+                str(remote_match.get("manufacturer"))
+                if remote_match.get("manufacturer")
+                else server.manufacturer
+            ),
+            remote_uuid=str(remote_uuid) if remote_uuid else None,
+            last_seen_at=now,
+            registered_at=(cached.registered_at if cached and cached.registered_at else now),
+        )
+    )
+
+    return remote_match, created
+
+
+def _ensure_alpaca_devices(
+    *,
+    gateway: ArcsecondGateway,
+    remote_server: dict[str, Any],
+    configured_devices: list[ConfiguredAlpacaDevice],
+    organisation: str | None,
+    echo: Logger,
+) -> tuple[list[dict[str, Any]], int, int]:
+    remote_server_uuid = str(remote_server.get("uuid") or "").strip()
+    if not remote_server_uuid:
+        raise FocaleError("Arcsecond did not return a UUID for the registered Alpaca server.")
+
+    remote_devices = gateway.list_alpaca_devices(
+        server_uuid=remote_server_uuid,
+        organisation=organisation,
+    )
+    devices_by_unique_id = {
+        str(device.get("unique_id") or ""): device for device in remote_devices
+    }
+
+    created = 0
+    already_registered = 0
+    ensured_devices: list[dict[str, Any]] = []
+
+    for device in configured_devices:
+        existing = devices_by_unique_id.get(device.unique_id)
+        if existing is None:
+            existing = gateway.create_alpaca_device(
+                server_uuid=remote_server_uuid,
+                name=device.name,
+                number=device.number,
+                unique_id=device.unique_id,
+                device_type=device.type,
+                organisation=organisation,
+            )
+            devices_by_unique_id[device.unique_id] = existing
+            created += 1
+            echo(f"Registered Alpaca device: {device.name} ({device.type})")
+        else:
+            already_registered += 1
+        ensured_devices.append(existing)
+
+    return ensured_devices, created, already_registered
+
+
+def _ensure_observing_site(
+    *,
+    gateway: ArcsecondGateway,
+    server: DiscoveredAlpacaServer,
+    telescope_device_id: int | None,
+    telescope_coordinates: dict[str, Any] | None,
+    sites: list[dict[str, Any]],
+    telescopes: list[dict[str, Any]],
+    organisation: str | None,
+    echo: Logger,
+) -> tuple[dict[str, Any], bool]:
+    preferred_telescope: dict[str, Any] | None = None
+    if telescope_device_id is not None:
+        for telescope in telescopes:
+            if telescope.get("device") == telescope_device_id:
+                preferred_telescope = telescope
+                break
+
+    if preferred_telescope is None:
+        preferred_telescope = _find_by_name(telescopes, _default_telescope_name(server))
+
+    if preferred_telescope is not None:
+        site = _find_site_by_uuid(sites, str(preferred_telescope.get("observing_site") or ""))
+        if site is not None:
+            return site, False
+
+    default_site_name = _default_site_name(server)
+    existing_site = _find_by_name(sites, default_site_name)
+    if existing_site is not None:
+        current_coordinates = existing_site.get("coordinates")
+        if telescope_coordinates and not current_coordinates:
+            updated_site = gateway.update_observing_site(
+                site_uuid=str(existing_site.get("uuid")),
+                payload={"coordinates": telescope_coordinates},
+                organisation=organisation,
+            )
+            sites[:] = [
+                updated_site if str(site.get("uuid")) == str(updated_site.get("uuid")) else site
+                for site in sites
+            ]
+            echo(f"Updated observing site coordinates for {default_site_name}.")
+            return updated_site, False
+        return existing_site, False
+
+    if telescope_coordinates is None:
+        raise FocaleError(
+            "Focale found a local Alpaca server, but could not read telescope site coordinates. "
+            "Automatic observing-site creation needs a Telescope device that exposes SiteLatitude and SiteLongitude."
+        )
+
+    created_site = gateway.create_observing_site(
+        name=default_site_name,
+        longitude=float(telescope_coordinates["longitude"]),
+        latitude=float(telescope_coordinates["latitude"]),
+        height=(
+            float(telescope_coordinates["height"])
+            if telescope_coordinates.get("height") is not None
+            else None
+        ),
+        organisation=organisation,
+    )
+    sites.append(created_site)
+    echo(f"Created observing site: {default_site_name}")
+    return created_site, True
+
+
+def _ensure_telescope(
+    *,
+    gateway: ArcsecondGateway,
+    server: DiscoveredAlpacaServer,
+    site: dict[str, Any],
+    telescope_device_id: int | None,
+    telescopes: list[dict[str, Any]],
+    organisation: str | None,
+    echo: Logger,
+) -> tuple[dict[str, Any] | None, bool]:
+    if telescope_device_id is None:
+        return None, False
+
+    telescope = None
+    for candidate in telescopes:
+        if candidate.get("device") == telescope_device_id:
+            telescope = candidate
+            break
+
+    if telescope is None:
+        telescope = _find_by_name(telescopes, _default_telescope_name(server))
+
+    site_uuid = str(site.get("uuid") or "")
+    if telescope is None:
+        created_telescope = gateway.create_telescope(
+            name=_default_telescope_name(server),
+            observing_site=site_uuid,
+            device_id=telescope_device_id,
+            organisation=organisation,
+        )
+        telescopes.append(created_telescope)
+        echo(f"Created telescope: {_default_telescope_name(server)}")
+        return created_telescope, True
+
+    updates: dict[str, Any] = {}
+    if telescope.get("device") != telescope_device_id:
+        updates["device"] = telescope_device_id
+    if str(telescope.get("observing_site") or "") != site_uuid:
+        updates["observing_site"] = site_uuid
+
+    if updates:
+        telescope = gateway.update_telescope(
+            telescope_uuid=str(telescope.get("uuid")),
+            payload=updates,
+            organisation=organisation,
+        )
+        for index, candidate in enumerate(telescopes):
+            if str(candidate.get("uuid") or "") == str(telescope.get("uuid") or ""):
+                telescopes[index] = telescope
+                break
+        echo(f"Updated telescope: {telescope.get('name')}")
+
+    return telescope, False
+
+
+def _ensure_equipment_for_device(
+    *,
+    gateway: ArcsecondGateway,
+    device: dict[str, Any],
+    configured_device: ConfiguredAlpacaDevice,
+    site: dict[str, Any] | None,
+    telescope: dict[str, Any] | None,
+    equipment_cache: dict[str, list[dict[str, Any]]],
+    organisation: str | None,
+    echo: Logger,
+) -> bool:
+    device_type = configured_device.type
+    if device_type in SITE_SCOPED_DEVICE_PATHS:
+        equipment_path = SITE_SCOPED_DEVICE_PATHS[device_type]
+        if site is None:
+            return False
+        scope_key = "observing_site"
+        scope_value = str(site.get("uuid") or "")
+    elif device_type in TELESCOPE_SCOPED_DEVICE_PATHS:
+        equipment_path = TELESCOPE_SCOPED_DEVICE_PATHS[device_type]
+        if telescope is None:
+            return False
+        scope_key = "telescope"
+        scope_value = str(telescope.get("uuid") or "")
+    else:
+        return False
+
+    items = equipment_cache.setdefault(
+        equipment_path,
+        gateway.list_equipment(equipment_path=equipment_path, organisation=organisation),
+    )
+    device_id = device.get("id")
+    if device_id is None:
+        return False
+
+    match: dict[str, Any] | None = None
+    for item in items:
+        if item.get("device") == device_id:
+            match = item
+            break
+
+    if match is None:
+        target_name = _default_equipment_name(configured_device)
+        for item in items:
+            if (
+                str(item.get("name") or "") == target_name
+                and str(item.get(scope_key) or "") == scope_value
+            ):
+                match = item
+                break
+
+    if match is None:
+        created = gateway.create_equipment(
+            equipment_path=equipment_path,
+            payload={
+                "name": _default_equipment_name(configured_device),
+                scope_key: scope_value,
+                "device": device_id,
+            },
+            organisation=organisation,
+        )
+        items.append(created)
+        echo(f"Created {configured_device.type} equipment: {_default_equipment_name(configured_device)}")
+        return True
+
+    if match.get("device") != device_id:
+        updated = gateway.update_equipment(
+            equipment_path=equipment_path,
+            equipment_uuid=str(match.get("uuid")),
+            payload={"device": device_id},
+            organisation=organisation,
+        )
+        for index, item in enumerate(items):
+            if str(item.get("uuid") or "") == str(updated.get("uuid") or ""):
+                items[index] = updated
+                break
+        echo(f"Linked {configured_device.type} equipment: {match.get('name')}")
+
+    return False
+
+
+def register_local_alpaca(
+    *,
+    api_server: str | None,
+    echo: Logger,
+) -> dict[str, Any]:
+    state = FocaleState.load()
+    gateway = _gateway(state=state, api_server=api_server)
+    gateway.ensure_authenticated()
+
+    discovered = discover_alpaca_servers()
+    if not discovered:
+        echo("No local ASCOM Remote servers discovered.")
+        return {
+            "ok": True,
+            "discovered": 0,
+            "registered": 0,
+            "already_registered": 0,
+        }
+
+    existing_remote = gateway.list_alpaca_servers(organisation=None)
+    existing_by_address: dict[str, dict[str, Any]] = {}
+    for server in existing_remote:
+        address = server.get("address")
+        if not address:
+            continue
+        existing_by_address[normalize_alpaca_address(str(address))] = server
+
+    sites = gateway.list_observing_sites(organisation=None)
+    telescopes = gateway.list_telescopes(organisation=None)
+    equipment_cache: dict[str, list[dict[str, Any]]] = {}
+
+    changed = False
+    registered = 0
+    already_registered = 0
+    devices_registered = 0
+    devices_already_registered = 0
+    sites_created = 0
+    telescopes_created = 0
+    equipments_created = 0
+    server_summaries: list[dict[str, Any]] = []
+
+    for server in discovered:
+        remote_server, server_created = _ensure_remote_server(
+            gateway=gateway,
+            state=state,
+            server=server,
+            existing_by_address=existing_by_address,
+            organisation=None,
+            echo=echo,
+        )
+        changed = True
+        if server_created:
+            registered += 1
+        else:
+            already_registered += 1
+
+        configured_devices = get_configured_devices(server.address)
+        ensured_devices, created_device_count, existing_device_count = _ensure_alpaca_devices(
+            gateway=gateway,
+            remote_server=remote_server,
+            configured_devices=configured_devices,
+            organisation=None,
+            echo=echo,
+        )
+        devices_registered += created_device_count
+        devices_already_registered += existing_device_count
+        if created_device_count:
+            changed = True
+
+        device_by_unique_id = {
+            str(device.get("unique_id") or ""): device for device in ensured_devices
+        }
+        telescope_configured = next(
+            (device for device in configured_devices if device.type == "Telescope"),
+            None,
+        )
+        telescope_remote = (
+            device_by_unique_id.get(telescope_configured.unique_id)
+            if telescope_configured is not None
+            else None
+        )
+        telescope_device_id = (
+            int(telescope_remote["id"])
+            if telescope_remote is not None and telescope_remote.get("id") is not None
+            else None
+        )
+        telescope_coordinates = None
+        if telescope_configured is not None:
+            coords = get_telescope_site_coordinates(
+                server.address,
+                device_number=telescope_configured.number,
+            )
+            if coords is not None:
+                telescope_coordinates = _coordinates_payload(
+                    longitude=coords.longitude,
+                    latitude=coords.latitude,
+                    height=coords.height,
+                )
+
+        site, site_created = _ensure_observing_site(
+            gateway=gateway,
+            server=server,
+            telescope_device_id=telescope_device_id,
+            telescope_coordinates=telescope_coordinates,
+            sites=sites,
+            telescopes=telescopes,
+            organisation=None,
+            echo=echo,
+        )
+        if site_created:
+            sites_created += 1
+            changed = True
+
+        telescope, telescope_created = _ensure_telescope(
+            gateway=gateway,
+            server=server,
+            site=site,
+            telescope_device_id=telescope_device_id,
+            telescopes=telescopes,
+            organisation=None,
+            echo=echo,
+        )
+        if telescope_created:
+            telescopes_created += 1
+            changed = True
+
+        created_equipment_for_server = 0
+        for configured_device in configured_devices:
+            remote_device = device_by_unique_id.get(configured_device.unique_id)
+            if remote_device is None:
+                continue
+            if _ensure_equipment_for_device(
+                gateway=gateway,
+                device=remote_device,
+                configured_device=configured_device,
+                site=site,
+                telescope=telescope,
+                equipment_cache=equipment_cache,
+                organisation=None,
+                echo=echo,
+            ):
+                equipments_created += 1
+                created_equipment_for_server += 1
+                changed = True
+
+        server_summaries.append(
+            {
+                "name": server.name,
+                "address": server.address,
+                "configured_devices": len(configured_devices),
+                "created_site": site_created,
+                "created_telescope": telescope_created,
+                "created_equipment_count": created_equipment_for_server,
+            }
+        )
+
+    if changed:
+        state.save()
+
+    echo(
+        "Observatory setup: "
+        f"{already_registered} server(s) already registered, {registered} new server registration(s), "
+        f"{devices_registered} new device registration(s), {sites_created} new site(s), "
+        f"{telescopes_created} new telescope(s), {equipments_created} new equipment item(s)."
+    )
+    return {
+        "ok": True,
+        "discovered": len(discovered),
+        "registered": registered,
+        "already_registered": already_registered,
+        "devices_registered": devices_registered,
+        "devices_already_registered": devices_already_registered,
+        "sites_created": sites_created,
+        "telescopes_created": telescopes_created,
+        "equipments_created": equipments_created,
+        "environment": state.environment or infer_environment(state),
+        "environment_label": environment_label(state.environment or infer_environment(state)),
+        "servers_summary": server_summaries,
+        "servers": [
+            {
+                "name": server.name,
+                "address": server.address,
+                "manufacturer": server.manufacturer,
+            }
+            for server in discovered
+        ],
+    }
 
 
 def list_contexts(
     *,
-    api_name: str,
     api_server: str | None,
 ) -> dict[str, Any]:
     state = FocaleState.load()
-    gateway = _gateway(state=state, api_name=api_name, api_server=api_server)
+    gateway = _gateway(state=state, api_server=api_server)
     gateway.ensure_authenticated()
     return {
         "current_default": context_label(state.default_organisation),
@@ -321,7 +1037,6 @@ def list_contexts(
 
 def set_default_context(
     *,
-    api_name: str,
     api_server: str | None,
     target: str,
     force: bool = False,
@@ -331,7 +1046,7 @@ def set_default_context(
         raise FocaleError("Context target cannot be empty.")
 
     state = FocaleState.load()
-    gateway = _gateway(state=state, api_name=api_name, api_server=api_server)
+    gateway = _gateway(state=state, api_server=api_server)
 
     if normalized.lower() in {"personal", "profile", "me"}:
         state.default_organisation = None
@@ -353,7 +1068,6 @@ def set_default_context(
 
 def connect_once(
     *,
-    api_name: str,
     api_server: str | None,
     hub_url: str | None,
     organisation: str | None,
@@ -363,14 +1077,14 @@ def connect_once(
     echo: Logger,
 ) -> dict[str, Any]:
     state = FocaleState.load()
-    gateway = _gateway(state=state, api_name=api_name, api_server=api_server)
+    gateway = _gateway(state=state, api_server=api_server)
     keypair = AgentKeypair.load_or_create(state.private_key_file())
     gateway.ensure_authenticated()
     resolved_organisation = resolve_context_organisation(state, organisation)
     resolved_hub_url = resolve_hub_url(state, hub_url)
 
-    if hub_url and hub_url != state.hub_url:
-        state.hub_url = hub_url
+    if resolved_hub_url != state.hub_url:
+        state.hub_url = resolved_hub_url
         state.save()
 
     record = _ensure_installation(
@@ -448,7 +1162,6 @@ def connect_once(
 
 def doctor(
     *,
-    api_name: str,
     api_server: str | None,
     hub_url: str | None,
     organisation: str | None,
@@ -474,7 +1187,7 @@ def doctor(
 
     try:
         state = FocaleState.load()
-        gateway = _gateway(state=state, api_name=api_name, api_server=api_server)
+        gateway = _gateway(state=state, api_server=api_server)
         resolved_organisation = resolve_context_organisation(state, organisation)
         report("state", True, f"workspace_id={state.workspace_id}", workspace_id=state.workspace_id)
         report("context", True, context_label(resolved_organisation))
@@ -514,7 +1227,7 @@ def doctor(
             detail = (
                 "JWT is valid or refreshed automatically"
                 if gateway.auth_type == "token"
-                else "using access-key authentication"
+                else "authenticated"
             )
             report("refresh", True, detail)
     except FocaleError as exc:
@@ -535,8 +1248,8 @@ def doctor(
 
     try:
         resolved_hub_url = resolve_hub_url(state, hub_url)
-        if hub_url and hub_url != state.hub_url:
-            state.hub_url = hub_url
+        if resolved_hub_url != state.hub_url:
+            state.hub_url = resolved_hub_url
             state.save()
         report("hub-url", True, resolved_hub_url, hub_url=resolved_hub_url)
     except FocaleError as exc:

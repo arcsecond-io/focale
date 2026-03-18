@@ -56,6 +56,8 @@ class AlpacaServerRecord:
 @dataclass
 class FocaleState:
     workspace_id: str
+    environment: str | None = None
+    api_server: str | None = None
     hub_url: str | None = None
     default_organisation: str | None = None
     auth: AuthSession | None = None
@@ -123,6 +125,8 @@ class FocaleState:
                 raise FocaleStateError(f"Invalid auth record in {path}: {exc}") from exc
         return cls(
             workspace_id=workspace_id,
+            environment=data.get("environment"),
+            api_server=data.get("api_server"),
             hub_url=data.get("hub_url"),
             default_organisation=data.get("default_organisation"),
             auth=auth,
@@ -136,6 +140,8 @@ class FocaleState:
 
         payload = {
             "workspace_id": self.workspace_id,
+            "environment": self.environment,
+            "api_server": self.api_server,
             "hub_url": self.hub_url,
             "default_organisation": self.default_organisation,
             "auth": asdict(self.auth) if self.auth else None,
@@ -171,3 +177,9 @@ class FocaleState:
     def set_alpaca_server(self, record: AlpacaServerRecord) -> None:
         key = self.alpaca_key(record.scope_type, record.scope_value, record.address)
         self.alpaca_servers[key] = record
+
+    def clear_remote_state(self) -> None:
+        self.auth = None
+        self.default_organisation = None
+        self.installations.clear()
+        self.alpaca_servers.clear()
