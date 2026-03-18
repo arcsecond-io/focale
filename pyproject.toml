@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "focale"
 version = "0.2.5"
-description = "Arcsecond desktop and Hub bootstrap client"
+description = "Focale desktop and Hub bootstrap client"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }

@@ -81,13 +81,13 @@ class FocaleWindow(QMainWindow):
         layout.addWidget(heading)
 
         subheading = QLabel(
-            "Desktop controls for Arcsecond session setup, Hub diagnostics, and local plate solving."
+            "Desktop controls for Focale session setup, Hub diagnostics, and local plate solving."
         )
         subheading.setWordWrap(True)
         layout.addWidget(subheading)
 
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_arcsecond_tab(), "Arcsecond")
+        self.tabs.addTab(self._build_arcsecond_tab(), "Focale")
         self.tabs.addTab(self._build_platesolver_tab(), "Plate Solver")
         layout.addWidget(self.tabs, 1)
 

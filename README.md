@@ -1,6 +1,6 @@
 # Focale
 
-Focale is a small desktop/CLI bootstrap for Arcsecond users that:
+Focale is a small desktop/CLI bootstrap for Focale users that:
 
 - logs in with the user's Arcsecond account
 - creates and stores a local Hub agent identity
