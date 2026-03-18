@@ -25,7 +25,6 @@ def _utcnow() -> str:
 
 @dataclass
 class RuntimeOptions:
-    api_name: str
     api_server: str | None
 
 
@@ -242,50 +241,32 @@ def _load_peaks_file(path: Path) -> list[list[float]]:
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 @click.option(
-    "--api-name",
-    default="cloud",
-    show_default=True,
-    help="Arcsecond API profile name from the shared arcsecond config.",
-)
-@click.option(
     "--api-server",
     help="Override the Arcsecond API base URL, for example https://api.arcsecond.dev.",
 )
 @click.version_option(version=__version__)
 @click.pass_context
-def main(ctx: click.Context, api_name: str, api_server: str | None) -> None:
-    ctx.obj = RuntimeOptions(api_name=api_name, api_server=api_server)
+def main(ctx: click.Context, api_server: str | None) -> None:
+    ctx.obj = RuntimeOptions(api_server=api_server)
 
 
-@main.command(help="Login to Arcsecond for Focale, preferably with password/JWT.")
+@main.command(help="Login to Arcsecond for Focale with password/JWT.")
 @click.option("--username", prompt=True, help="Arcsecond username (without @).")
-@click.option(
-    "--auth-mode",
-    type=click.Choice(["password", "access-key"], case_sensitive=False),
-    default="password",
-    show_default=True,
-    help="Prefer password/JWT auth. Access Key remains available as a fallback.",
-)
 @pass_options
-def login(options: RuntimeOptions, username: str, auth_mode: str) -> None:
+def login(options: RuntimeOptions, username: str) -> None:
     try:
         state = FocaleState.load()
         gateway = ArcsecondGateway(
             state=state,
-            api_name=options.api_name,
             api_server=options.api_server,
         )
-        if auth_mode == "password":
-            password = click.prompt("Arcsecond password", hide_input=True)
-            gateway.login_with_password(username=username, password=password)
-        else:
-            access_key = click.prompt("Arcsecond Access Key", hide_input=True)
-            gateway.login_with_access_key(username=username, access_key=access_key)
+        password = click.prompt("Arcsecond password", hide_input=True)
+        gateway.login_with_password(username=username, password=password)
     except ArcsecondGatewayError as exc:
         raise click.ClickException(str(exc)) from exc
 
     click.echo(
-        f"Arcsecond {auth_mode} login saved for {gateway.username}. "
+        f"Arcsecond login saved for {gateway.username}. "
         f"API: {gateway.api_server}"
     )
 
@@ -297,21 +278,17 @@ def status(options: RuntimeOptions) -> None:
         state = FocaleState.load()
         gateway = ArcsecondGateway(
             state=state,
-            api_name=options.api_name,
             api_server=options.api_server,
         )
     except FocaleError as exc:
         raise click.ClickException(str(exc)) from exc
 
     click.echo(f"Focale version: {__version__}")
-    click.echo(f"Arcsecond api profile: {options.api_name}")
     click.echo(f"Arcsecond api server: {gateway.api_server}")
-    click.echo(f"Arcsecond config: {gateway.config.file_path()}")
     click.echo(f"Logged in: {'yes' if gateway.is_logged_in else 'no'}")
     click.echo(f"Username: {gateway.username or '(none)'}")
     click.echo(f"Auth type: {gateway.auth_type or '(none)'}")
     click.echo(f"Refresh token available: {'yes' if gateway.has_refresh_token else 'no'}")
-    click.echo(f"Access key fallback available: {'yes' if gateway.has_access_key else 'no'}")
     click.echo(f"Focale state: {state.state_file()}")
     click.echo(f"Workspace id: {state.workspace_id}")
     click.echo(f"Default hub url: {state.hub_url or '(none)'}")
@@ -340,7 +317,6 @@ def context_show(options: RuntimeOptions) -> None:
         state = FocaleState.load()
         gateway = ArcsecondGateway(
             state=state,
-            api_name=options.api_name,
             api_server=options.api_server,
         )
     except FocaleError as exc:
@@ -357,7 +333,6 @@ def context_list(options: RuntimeOptions) -> None:
         state = FocaleState.load()
         gateway = ArcsecondGateway(
             state=state,
-            api_name=options.api_name,
             api_server=options.api_server,
         )
         gateway.ensure_authenticated()
@@ -389,7 +364,6 @@ def context_use(options: RuntimeOptions, target: str, force: bool) -> None:
         state = FocaleState.load()
         gateway = ArcsecondGateway(
             state=state,
-            api_name=options.api_name,
             api_server=options.api_server,
         )
 
@@ -455,7 +429,6 @@ def connect(
         state = FocaleState.load()
         gateway = ArcsecondGateway(
             state=state,
-            api_name=options.api_name,
             api_server=options.api_server,
         )
         keypair = AgentKeypair.load_or_create(state.private_key_file())
@@ -591,7 +564,6 @@ def doctor(
         state = FocaleState.load()
         gateway = ArcsecondGateway(
             state=state,
-            api_name=options.api_name,
             api_server=options.api_server,
         )
         resolved_organisation = _resolve_context_organisation(state, organisation)
@@ -649,7 +621,7 @@ def doctor(
             detail = (
                 "JWT is valid or refreshed automatically"
                 if gateway.auth_type == "token"
-                else "using access-key authentication"
+                else "authenticated"
             )
             report("refresh", True, detail)
     except FocaleError as exc:

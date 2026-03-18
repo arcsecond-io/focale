@@ -8,9 +8,7 @@ Focale is a small desktop/CLI bootstrap for Focale users that:
 - mints a short-lived Hub JWT
 - connects to the Arcsecond Hub using the signed Ed25519 challenge flow
 
-The package depends on the published [`arcsecond`](https://pypi.org/project/arcsecond/) CLI/library and reuses its account configuration instead of creating a second login system.
-
-By default, Focale uses Arcsecond password login to obtain a short-lived bearer JWT plus a refresh token. That avoids storing a long-lived Access Key in the normal path. Access Key login is still available as a fallback.
+Focale owns its own local state and uses Arcsecond password login to obtain a short-lived bearer JWT plus a refresh token.
 
 ## User install
 
@@ -49,7 +47,6 @@ See:
 
 ```bash
 focale login
-focale login --auth-mode access-key
 focale status
 focale context show
 focale context list
@@ -101,12 +98,9 @@ focale platesolver solve --service-url http://127.0.0.1:8900 --peaks-file ./peak
 
 ## Development
 
-If you are developing Focale next to the local Arcsecond CLI checkout:
-
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ../arcsecond-cli
 pip install -e .[dev]
 pytest -q
 ```

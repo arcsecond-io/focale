@@ -28,7 +28,6 @@ classifiers = [
 ]
 dependencies = [
   "PySide6>=6.8",
-  "arcsecond>=3.7.3",
   "arcsecond-astrometry>=4.3.0",
   "click>=8.1",
   "cryptography>=42",

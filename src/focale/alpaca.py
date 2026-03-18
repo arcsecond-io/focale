@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from .exceptions import FocaleError
+
 
 DISCOVERY_PORT = 32227
 DISCOVERY_PAYLOAD = b"alpacadiscovery1"
@@ -18,6 +20,21 @@ class DiscoveredAlpacaServer:
     name: str
     address: str
     manufacturer: str | None = None
+
+
+@dataclass(frozen=True)
+class ConfiguredAlpacaDevice:
+    type: str
+    number: int
+    name: str
+    unique_id: str
+
+
+@dataclass(frozen=True)
+class AlpacaSiteCoordinates:
+    longitude: float
+    latitude: float
+    height: float | None = None
 
 
 def normalize_alpaca_address(address: str) -> str:
@@ -135,3 +152,149 @@ def _fetch_management_description(*, host: str, port: int, timeout_s: float) -> 
         "server_name": payload.get("ServerName") or payload.get("server_name"),
         "manufacturer": payload.get("Manufacturer") or payload.get("manufacturer"),
     }
+
+
+def get_configured_devices(
+    address: str,
+    *,
+    timeout_s: float = 3.0,
+) -> list[ConfiguredAlpacaDevice]:
+    normalized_address = normalize_alpaca_address(address)
+    url = f"{normalized_address}/management/v1/configureddevices"
+    try:
+        response = httpx.get(url, timeout=timeout_s)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise FocaleError(f"Unable to inspect Alpaca devices at {normalized_address}: {exc}") from exc
+
+    if isinstance(payload, dict):
+        error_number = payload.get("ErrorNumber")
+        if error_number not in (None, 0):
+            error_message = payload.get("ErrorMessage") or f"error {error_number}"
+            raise FocaleError(
+                f"Alpaca configured devices query failed at {normalized_address}: {error_message}"
+            )
+        value = payload.get("Value")
+        if isinstance(value, list):
+            payload = value
+
+    if not isinstance(payload, list):
+        raise FocaleError(
+            f"Unexpected configured devices response from {normalized_address}."
+        )
+
+    devices: list[ConfiguredAlpacaDevice] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        try:
+            number = int(item.get("DeviceNumber"))
+        except (TypeError, ValueError):
+            continue
+
+        unique_id = str(item.get("UniqueID") or "").strip()
+        device_type = str(item.get("DeviceType") or "").strip()
+        name = str(item.get("DeviceName") or "").strip()
+        if not unique_id or not device_type or not name:
+            continue
+
+        devices.append(
+            ConfiguredAlpacaDevice(
+                type=device_type,
+                number=number,
+                name=name,
+                unique_id=unique_id,
+            )
+        )
+
+    return devices
+
+
+def get_telescope_site_coordinates(
+    address: str,
+    *,
+    device_number: int,
+    timeout_s: float = 3.0,
+) -> AlpacaSiteCoordinates | None:
+    try:
+        latitude = _get_device_value(
+            address=address,
+            device_type="telescope",
+            device_number=device_number,
+            attribute="sitelatitude",
+            timeout_s=timeout_s,
+        )
+        longitude = _get_device_value(
+            address=address,
+            device_type="telescope",
+            device_number=device_number,
+            attribute="sitelongitude",
+            timeout_s=timeout_s,
+        )
+    except FocaleError:
+        return None
+
+    height: float | None = None
+    try:
+        elevation = _get_device_value(
+            address=address,
+            device_type="telescope",
+            device_number=device_number,
+            attribute="siteelevation",
+            timeout_s=timeout_s,
+        )
+    except FocaleError:
+        elevation = None
+
+    try:
+        latitude_value = float(latitude)
+        longitude_value = float(longitude)
+    except (TypeError, ValueError):
+        return None
+
+    if elevation is not None:
+        try:
+            height = float(elevation)
+        except (TypeError, ValueError):
+            height = None
+
+    return AlpacaSiteCoordinates(
+        longitude=longitude_value,
+        latitude=latitude_value,
+        height=height,
+    )
+
+
+def _get_device_value(
+    *,
+    address: str,
+    device_type: str,
+    device_number: int,
+    attribute: str,
+    timeout_s: float,
+) -> Any:
+    normalized_address = normalize_alpaca_address(address)
+    url = f"{normalized_address}/api/v1/{device_type}/{device_number}/{attribute}"
+    try:
+        response = httpx.get(url, timeout=timeout_s)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise FocaleError(
+            f"Unable to query Alpaca {device_type}#{device_number} {attribute} at {normalized_address}: {exc}"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise FocaleError(
+            f"Unexpected Alpaca response for {device_type}#{device_number} {attribute}."
+        )
+
+    error_number = payload.get("ErrorNumber")
+    if error_number not in (None, 0):
+        error_message = payload.get("ErrorMessage") or f"error {error_number}"
+        raise FocaleError(
+            f"Alpaca {device_type}#{device_number} {attribute} failed: {error_message}"
+        )
+
+    return payload.get("Value")

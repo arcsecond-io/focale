@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from arcsecond.api import ArcsecondConfig
 
 from .exceptions import ArcsecondGatewayError
 from .state import AuthSession, FocaleState
@@ -25,68 +24,50 @@ class OrganisationContext:
 
 
 class ArcsecondGateway:
+    CLIENT_TYPE = "desktop"
+    DEFAULT_API_SERVER = "https://api.arcsecond.io"
+
     def __init__(
         self,
         *,
         state: FocaleState,
-        api_name: str = "cloud",
         api_server: str | None = None,
     ) -> None:
         self.state = state
-        self.config = ArcsecondConfig(api_name=api_name)
-        self.api_server = (api_server or self.config.api_server or "").rstrip("/")
+        self.api_server = (api_server or state.api_server or self.DEFAULT_API_SERVER).rstrip("/")
         if not self.api_server:
-            raise ArcsecondGatewayError(
-                f"Unable to resolve an Arcsecond API server for profile `{api_name}`.", 400
-            )
+            raise ArcsecondGatewayError("Unable to resolve an Arcsecond API server.", 400)
 
     @property
     def username(self) -> str:
-        if self.state.auth and self.state.auth.username:
+        if self.state.auth:
             return self.state.auth.username
-        return self.config.username
+        return ""
 
     @property
     def is_logged_in(self) -> bool:
-        return self.state.auth is not None or self.config.is_logged_in
+        return self.state.auth is not None
 
     @property
     def auth_type(self) -> str | None:
         if self.state.auth:
             return self.state.auth.auth_type
-        if self.config.access_key:
-            return "key"
         return None
-
-    @property
-    def has_access_key(self) -> bool:
-        return bool(self.config.access_key) or (
-            bool(self.state.auth) and self.state.auth.auth_type == "key"
-        )
 
     @property
     def has_refresh_token(self) -> bool:
         return bool(self.state.auth and self.state.auth.refresh_token)
 
-    def login_with_access_key(self, *, username: str, access_key: str) -> None:
-        self._request_dict(
-            "post",
-            "auth/key/verify",
-            json={"username": username, "key": access_key},
-            authenticated=False,
-        )
-        self.state.auth = AuthSession(
-            username=username,
-            access_token=access_key,
-            auth_type="key",
-        )
-        self.state.save()
-
     def login_with_password(self, *, username: str, password: str) -> None:
         payload = self._request_dict(
             "post",
             "auth/token",
-            json={"username": username, "password": password},
+            json={
+                "username": username,
+                "password": password,
+                "client": self.CLIENT_TYPE,
+            },
+            headers={"X-Arcsecond-Client": self.CLIENT_TYPE},
             authenticated=False,
         )
         access_token = payload.get("access")
@@ -112,14 +93,28 @@ class ArcsecondGateway:
 
         now = int(time.time())
         if session.refresh_exp and now >= int(session.refresh_exp):
-            raise ArcsecondGatewayError("The Arcsecond refresh token has expired. Run `focale login` again.", 401)
+            self._clear_auth_session()
+            raise ArcsecondGatewayError(
+                "Your Arcsecond session expired or was revoked. Sign in again.",
+                401,
+            )
 
-        payload = self._request_dict(
-            "post",
-            "auth/token/refresh",
-            json={"refresh": session.refresh_token},
-            authenticated=False,
-        )
+        try:
+            payload = self._request_dict(
+                "post",
+                "auth/token/refresh",
+                json={"refresh": session.refresh_token},
+                authenticated=False,
+                retry_on_401=False,
+            )
+        except ArcsecondGatewayError as exc:
+            if exc.status == 401 or self._is_invalid_refresh_error(exc):
+                self._clear_auth_session()
+                raise ArcsecondGatewayError(
+                    "Your Arcsecond session expired or was revoked. Sign in again.",
+                    401,
+                ) from exc
+            raise
         access_token = payload.get("access")
         refresh_token = payload.get("refresh")
         if not access_token or not refresh_token:
@@ -135,6 +130,17 @@ class ArcsecondGateway:
             created_at=session.created_at,
         )
         self.state.save()
+
+    def _clear_auth_session(self) -> None:
+        if self.state.auth is None:
+            return
+        self.state.auth = None
+        self.state.save()
+
+    @staticmethod
+    def _is_invalid_refresh_error(exc: ArcsecondGatewayError) -> bool:
+        message = str(exc)
+        return exc.status == 400 and "Invalid or expired refresh token." in message
 
     def enroll_agent(self, *, public_key_b64: str, organisation: str | None = None) -> str:
         payload = {"public_key_b64": public_key_b64}
@@ -180,21 +186,18 @@ class ArcsecondGateway:
         return username
 
     def require_auth_session(self) -> AuthSession:
-        if self.state.auth:
+        if self.state.auth is not None:
+            if self.state.auth.auth_type != "token":
+                self._clear_auth_session()
+                raise ArcsecondGatewayError(
+                    "Focale only supports JWT sessions. Sign in again.",
+                    401,
+                )
             return self.state.auth
-        if self.config.access_key:
-            return AuthSession(
-                username=self.config.username,
-                access_token=self.config.access_key,
-                auth_type="key",
-            )
         raise ArcsecondGatewayError("No Arcsecond credentials are available. Run `focale login` first.", 401)
 
     def ensure_authenticated(self) -> None:
         session = self.require_auth_session()
-        if session.auth_type != "token":
-            return
-
         now = int(time.time())
         access_exp = int(session.access_exp or 0)
         if access_exp and now < access_exp - 30:
@@ -229,7 +232,15 @@ class ArcsecondGateway:
         return sorted(contexts, key=lambda item: item.subdomain)
 
     def list_alpaca_servers(self, *, organisation: str | None = None) -> list[dict[str, Any]]:
-        payload = self._request("get", self._scope_path("alpacaservers", organisation))
+        params: dict[str, Any] | None = None
+        if not organisation:
+            params = {"profile": self.require_username()}
+
+        payload = self._request(
+            "get",
+            self._scope_path("alpacaservers", organisation),
+            params=params,
+        )
         if not isinstance(payload, list):
             raise ArcsecondGatewayError("Unexpected Arcsecond alpacaservers payload.", 500)
 
@@ -263,6 +274,182 @@ class ArcsecondGateway:
             json=payload,
         )
 
+    def list_alpaca_devices(
+        self,
+        *,
+        server_uuid: str | None = None,
+        organisation: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {}
+        if server_uuid:
+            params["server"] = server_uuid
+
+        payload = self._request(
+            "get",
+            self._scope_path("alpacadevices", organisation),
+            params=params or None,
+        )
+        if not isinstance(payload, list):
+            raise ArcsecondGatewayError("Unexpected Arcsecond alpacadevices payload.", 500)
+        return [row for row in payload if isinstance(row, dict)]
+
+    def create_alpaca_device(
+        self,
+        *,
+        server_uuid: str,
+        name: str,
+        number: int,
+        unique_id: str,
+        device_type: str,
+        organisation: str | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "server": server_uuid,
+            "name": name,
+            "number": number,
+            "unique_id": unique_id,
+            "type": device_type,
+        }
+        return self._request_dict(
+            "post",
+            self._scope_path("alpacadevices", organisation),
+            json=payload,
+        )
+
+    def list_observing_sites(self, *, organisation: str | None = None) -> list[dict[str, Any]]:
+        payload = self._request("get", self._scope_path("observingsites", organisation))
+        if not isinstance(payload, list):
+            raise ArcsecondGatewayError("Unexpected Arcsecond observing sites payload.", 500)
+        return [row for row in payload if isinstance(row, dict)]
+
+    def create_observing_site(
+        self,
+        *,
+        name: str,
+        longitude: float,
+        latitude: float,
+        height: float | None = None,
+        organisation: str | None = None,
+    ) -> dict[str, Any]:
+        coordinates: dict[str, Any] = {
+            "longitude": longitude,
+            "latitude": latitude,
+        }
+        if height is not None:
+            coordinates["height"] = height
+
+        payload: dict[str, Any] = {
+            "name": name,
+            "coordinates": coordinates,
+        }
+        if organisation:
+            payload["organisation"] = organisation
+
+        return self._request_dict(
+            "post",
+            self._scope_path("observingsites", organisation),
+            json=payload,
+        )
+
+    def update_observing_site(
+        self,
+        *,
+        site_uuid: str,
+        payload: dict[str, Any],
+        organisation: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_dict(
+            "patch",
+            self._scope_path(f"observingsites/{site_uuid}", organisation),
+            json=payload,
+        )
+
+    def list_telescopes(self, *, organisation: str | None = None) -> list[dict[str, Any]]:
+        payload = self._request("get", self._scope_path("telescopes", organisation))
+        if not isinstance(payload, list):
+            raise ArcsecondGatewayError("Unexpected Arcsecond telescopes payload.", 500)
+        return [row for row in payload if isinstance(row, dict)]
+
+    def create_telescope(
+        self,
+        *,
+        name: str,
+        observing_site: str,
+        device_id: int | None = None,
+        organisation: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "name": name,
+            "observing_site": observing_site,
+        }
+        if device_id is not None:
+            payload["device"] = device_id
+        if organisation:
+            payload["organisation"] = organisation
+
+        return self._request_dict(
+            "post",
+            self._scope_path("telescopes", organisation),
+            json=payload,
+        )
+
+    def update_telescope(
+        self,
+        *,
+        telescope_uuid: str,
+        payload: dict[str, Any],
+        organisation: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_dict(
+            "patch",
+            self._scope_path(f"telescopes/{telescope_uuid}", organisation),
+            json=payload,
+        )
+
+    def list_equipment(
+        self,
+        *,
+        equipment_path: str,
+        organisation: str | None = None,
+    ) -> list[dict[str, Any]]:
+        payload = self._request("get", self._scope_path(equipment_path, organisation))
+        if not isinstance(payload, list):
+            raise ArcsecondGatewayError(
+                f"Unexpected Arcsecond {equipment_path} payload.",
+                500,
+            )
+        return [row for row in payload if isinstance(row, dict)]
+
+    def create_equipment(
+        self,
+        *,
+        equipment_path: str,
+        payload: dict[str, Any],
+        organisation: str | None = None,
+    ) -> dict[str, Any]:
+        request_payload = dict(payload)
+        if organisation:
+            request_payload["organisation"] = organisation
+        return self._request_dict(
+            "post",
+            self._scope_path(equipment_path, organisation),
+            json=request_payload,
+        )
+
+    def update_equipment(
+        self,
+        *,
+        equipment_path: str,
+        equipment_uuid: str,
+        payload: dict[str, Any],
+        organisation: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_dict(
+            "patch",
+            self._scope_path(f"{equipment_path}/{equipment_uuid}", organisation),
+            json=payload,
+        )
+
     def _scope_path(self, path: str, organisation: str | None) -> str:
         if organisation:
             return f"{organisation}/{path}"
@@ -280,6 +467,8 @@ class ArcsecondGateway:
         path: str,
         *,
         json: dict | None = None,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
         authenticated: bool = True,
         retry_on_401: bool = True,
     ) -> dict[str, Any]:
@@ -287,6 +476,8 @@ class ArcsecondGateway:
             method,
             path,
             json=json,
+            params=params,
+            headers=headers,
             authenticated=authenticated,
             retry_on_401=retry_on_401,
         )
@@ -303,17 +494,26 @@ class ArcsecondGateway:
         path: str,
         *,
         json: dict | None = None,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
         authenticated: bool = True,
         retry_on_401: bool = True,
     ) -> Any:
-        headers = {}
+        request_headers = dict(headers or {})
         if authenticated:
             self.ensure_authenticated()
-            headers.update(self._auth_headers())
+            request_headers.update(self._auth_headers())
 
         url = f"{self.api_server}/{path.strip('/')}/"
         try:
-            response = httpx.request(method.upper(), url, json=json, headers=headers, timeout=30)
+            response = httpx.request(
+                method.upper(),
+                url,
+                json=json,
+                params=params,
+                headers=request_headers,
+                timeout=30,
+            )
         except httpx.RequestError as exc:
             raise ArcsecondGatewayError(str(exc), 400) from exc
 
@@ -325,6 +525,8 @@ class ArcsecondGateway:
                     method,
                     path,
                     json=json,
+                    params=params,
+                    headers=headers,
                     authenticated=authenticated,
                     retry_on_401=False,
                 )
