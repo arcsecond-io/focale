@@ -1,3 +1,5 @@
-# This file is overwritten during the build process for non-production environments.
-# Do not edit manually. Commit only with ENVIRONMENT = "production".
-ENVIRONMENT = "production"
+import os
+
+# The CI build overwrites this file with a hardcoded constant for each environment.
+# Locally, set the FOCALE_ENV environment variable to override (default: "production").
+ENVIRONMENT = os.environ.get("FOCALE_ENV", "production")
