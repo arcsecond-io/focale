@@ -7,11 +7,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal, Slot
-from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
-    QDialog,
-    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -23,7 +20,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QRadioButton,
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
@@ -34,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from . import services
+from ._environment import ENVIRONMENT as BAKED_ENVIRONMENT
 from .exceptions import ArcsecondGatewayError, FocaleError
 
 WorkerFunc = Callable[[Callable[[str], None]], object]
@@ -67,44 +64,6 @@ class FunctionWorker(QRunnable):
             self.signals.finished.emit()
 
 
-class EnvironmentDialog(QDialog):
-    def __init__(self, *, current_environment: str | None, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Choose Environment")
-        self.setModal(True)
-        self.resize(420, 220)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
-
-        title = QLabel("Choose where Focale should connect")
-        title.setStyleSheet("font-size: 18px; font-weight: 600;")
-        layout.addWidget(title)
-
-        subtitle = QLabel(
-            "Normal users should use Arcsecond Cloud. Staging is only for testing."
-        )
-        subtitle.setWordWrap(True)
-        layout.addWidget(subtitle)
-
-        self.production_radio = QRadioButton("Arcsecond Cloud")
-        self.staging_radio = QRadioButton("Arcsecond Staging")
-        self.production_radio.setChecked(current_environment != "staging")
-        self.staging_radio.setChecked(current_environment == "staging")
-        layout.addWidget(self.production_radio)
-        layout.addWidget(self.staging_radio)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def selected_environment(self) -> str:
-        if self.staging_radio.isChecked():
-            return "staging"
-        return "production"
-
 
 class FocaleWindow(QMainWindow):
     def __init__(self) -> None:
@@ -116,10 +75,10 @@ class FocaleWindow(QMainWindow):
         ] = {}
         self._settings = services.user_settings()
 
-        self.setWindowTitle(f"Focale {__version__}")
+        env_suffix = f" — {services.environment_label(BAKED_ENVIRONMENT)}" if BAKED_ENVIRONMENT != "production" else ""
+        self.setWindowTitle(f"Focale {__version__}{env_suffix}")
         self.resize(980, 760)
         self.setStatusBar(QStatusBar(self))
-        self._build_menu()
 
         root = QWidget(self)
         self.setCentralWidget(root)
@@ -149,12 +108,6 @@ class FocaleWindow(QMainWindow):
         layout.addWidget(self.log_output)
 
         self._refresh_status_summary()
-
-    def _build_menu(self) -> None:
-        app_menu = self.menuBar().addMenu("Focale")
-        switch_environment_action = QAction("Switch Environment...", self)
-        switch_environment_action.triggered.connect(self._switch_environment)
-        app_menu.addAction(switch_environment_action)
 
     def _build_arcsecond_tab(self) -> QWidget:
         tab = QWidget()
@@ -568,31 +521,6 @@ class FocaleWindow(QMainWindow):
             f"Found {count} local server(s): {names}{extra}.{registration}{devices}{resources}"
         )
 
-    def _switch_environment(self) -> None:
-        dialog = EnvironmentDialog(
-            current_environment=self._settings.get("environment"),
-            parent=self,
-        )
-        if dialog.exec() != QDialog.Accepted:
-            return
-
-        payload = services.select_environment(dialog.selected_environment())
-        self._settings = services.user_settings()
-        self.environment_label.setText(
-            str(self._settings.get("environment_label") or "Arcsecond Cloud")
-        )
-        self.secret_input.clear()
-        self.local_alpaca_summary.setText("No local scan yet.")
-        self._append_log("Environment updated.")
-        self._append_log(self._format_payload(payload))
-        self._refresh_status_summary()
-        if payload.get("changed"):
-            QMessageBox.information(
-                self,
-                "Focale",
-                "Environment switched. Sign in again before connecting or registering equipment.",
-            )
-
     def _platesolver_status(self) -> None:
         service_url = self._clean(self.solver_service_url_input)
         cache_dir = self._clean(self.solver_cache_dir_input)
@@ -672,12 +600,7 @@ class FocaleWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
-    settings = services.user_settings()
-    if settings.get("environment") is None:
-        dialog = EnvironmentDialog(current_environment=None)
-        if dialog.exec() != QDialog.Accepted:
-            return 0
-        services.select_environment(dialog.selected_environment())
+    services.ensure_environment()
     window = FocaleWindow()
     window.show()
     return app.exec()

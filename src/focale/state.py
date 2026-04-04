@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ._environment import ENVIRONMENT as BAKED_ENVIRONMENT
 from .exceptions import FocaleStateError
 
 
@@ -66,17 +67,18 @@ class FocaleState:
 
     @classmethod
     def config_dir(cls) -> Path:
+        app_dir = "focale" if BAKED_ENVIRONMENT == "production" else f"focale-{BAKED_ENVIRONMENT}"
         home = Path.home()
         if os.name == "nt":
             root = os.environ.get("APPDATA") or os.environ.get("LOCALAPPDATA")
             base = Path(root) if root else home / "AppData" / "Roaming"
-            return base / "Arcsecond" / "focale"
+            return base / "Arcsecond" / app_dir
         if sys.platform == "darwin":
-            return home / "Library" / "Application Support" / "focale"
+            return home / "Library" / "Application Support" / app_dir
         xdg_root = os.environ.get("XDG_CONFIG_HOME")
         if xdg_root:
-            return Path(xdg_root).expanduser() / "focale"
-        return home / ".config" / "focale"
+            return Path(xdg_root).expanduser() / app_dir
+        return home / ".config" / app_dir
 
     @classmethod
     def state_file(cls) -> Path:

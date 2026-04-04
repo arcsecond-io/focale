@@ -9,6 +9,7 @@ from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 from . import __version__
+from ._environment import ENVIRONMENT as BAKED_ENVIRONMENT
 from .agent_auth import AgentKeypair
 from .alpaca import (
     ConfiguredAlpacaDevice,
@@ -37,6 +38,11 @@ ENVIRONMENT_PRESETS: dict[str, dict[str, str]] = {
         "label": "Arcsecond Staging",
         "api_server": "https://api.arcsecond.dev",
         "hub_url": "wss://hub.arcsecond.dev/ws/agent",
+    },
+    "dev": {
+        "label": "Arcsecond Dev",
+        "api_server": "http://localhost:8000",
+        "hub_url": "ws://localhost:8002/ws/agent",
     },
 }
 
@@ -361,10 +367,7 @@ def login(
 
 def user_settings() -> dict[str, Any]:
     state = FocaleState.load()
-    inferred_environment = infer_environment(state)
-    environment = state.environment or inferred_environment
-    effective_environment = environment or "production"
-    defaults = environment_defaults(effective_environment)
+    defaults = environment_defaults(BAKED_ENVIRONMENT)
     api_server = state.api_server or defaults["api_server"]
     hub_url = state.hub_url or defaults["hub_url"]
     username = state.auth.username if state.auth else None
@@ -372,10 +375,23 @@ def user_settings() -> dict[str, Any]:
         "username": username,
         "api_server": api_server,
         "hub_url": hub_url,
-        "environment": environment,
-        "environment_label": environment_label(effective_environment),
+        "environment": BAKED_ENVIRONMENT,
+        "environment_label": environment_label(BAKED_ENVIRONMENT),
         "logged_in": state.auth is not None,
     }
+
+
+def ensure_environment() -> None:
+    """Apply the baked-in environment to state if not already configured correctly."""
+    state = FocaleState.load()
+    preset = environment_defaults(BAKED_ENVIRONMENT)
+    if (
+        state.environment == BAKED_ENVIRONMENT
+        and state.api_server == preset["api_server"]
+        and normalize_hub_url(state.hub_url) == normalize_hub_url(preset["hub_url"])
+    ):
+        return
+    select_environment(BAKED_ENVIRONMENT)
 
 
 def select_environment(environment: str) -> dict[str, Any]:

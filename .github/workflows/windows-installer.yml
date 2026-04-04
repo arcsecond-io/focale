@@ -14,12 +14,29 @@ on:
         description: "Version string to publish in the installer and release asset"
         required: false
         default: ""
+      environment:
+        description: "Environment to build (production, staging, dev). Leave blank to build all."
+        required: false
+        default: ""
 
 jobs:
   build-installer:
     runs-on: windows-latest
     permissions:
       contents: write
+
+    strategy:
+      matrix:
+        environment:
+          - production
+          - staging
+          - dev
+      fail-fast: false
+
+    # Skip environments not requested when triggered manually with a specific environment
+    if: >
+      inputs.environment == '' ||
+      inputs.environment == matrix.environment
 
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +60,46 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($version)) { $version = "0.2.0-dev" }
           "value=$version" >> $env:GITHUB_OUTPUT
 
+      - name: Resolve environment metadata
+        id: env_meta
+        shell: pwsh
+        run: |
+          $env_name = "${{ matrix.environment }}"
+          switch ($env_name) {
+            "production" {
+              $app_name      = "Focale"
+              $exe_name      = "focale"
+              $install_dir   = "{autopf}\Arcsecond\Focale"
+              $app_id        = "11A3125E-D7EA-487D-9998-67E95343F4A5"
+            }
+            "staging" {
+              $app_name      = "Focale Staging"
+              $exe_name      = "focale-staging"
+              $install_dir   = "{autopf}\Arcsecond\Focale Staging"
+              $app_id        = "5B3A2E10-7C4D-4F9A-B1E8-2D6F0A3C5E71"
+            }
+            "dev" {
+              $app_name      = "Focale Dev"
+              $exe_name      = "focale-dev"
+              $install_dir   = "{autopf}\Arcsecond\Focale Dev"
+              $app_id        = "9E7C4B20-3A5F-4D8C-C2F9-3E70B4D6F820"
+            }
+          }
+          "app_name=$app_name"    >> $env:GITHUB_OUTPUT
+          "exe_name=$exe_name"    >> $env:GITHUB_OUTPUT
+          "install_dir=$install_dir" >> $env:GITHUB_OUTPUT
+          "app_id=$app_id"        >> $env:GITHUB_OUTPUT
+
+      - name: Bake environment into source
+        shell: pwsh
+        run: |
+          $env_name = "${{ matrix.environment }}"
+          Set-Content -Path "src/focale/_environment.py" -Value @"
+          # This file is generated during the build process. Do not edit manually.
+          # The value is baked at build time to produce environment-specific applications.
+          ENVIRONMENT = "$env_name"
+          "@
+
       - name: Install build dependencies
         shell: pwsh
         run: |
@@ -57,7 +114,7 @@ jobs:
             --clean `
             --onedir `
             --windowed `
-            --name focale `
+            --name "${{ steps.env_meta.outputs.exe_name }}" `
             --paths src `
             --collect-submodules arcsecond `
             --collect-submodules astrometry `
@@ -110,12 +167,15 @@ jobs:
       - name: Build installer
         shell: pwsh
         run: |
-          if (-not (Test-Path "dist\focale")) {
-            throw "PyInstaller output directory dist\\focale was not created."
+          $exe_name = "${{ steps.env_meta.outputs.exe_name }}"
+          $dist_dir = "dist\$exe_name"
+
+          if (-not (Test-Path $dist_dir)) {
+            throw "PyInstaller output directory $dist_dir was not created."
           }
 
-          $sourceDir = (Resolve-Path "dist\focale").Path
-          $outputDir = Join-Path $PWD "dist\windows"
+          $sourceDir  = (Resolve-Path $dist_dir).Path
+          $outputDir  = Join-Path $PWD "dist\windows"
           New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
           Write-Host "Installer source dir: $sourceDir"
@@ -123,7 +183,11 @@ jobs:
           Get-ChildItem -Path $sourceDir -Recurse -File | Select-Object -First 50 FullName, Length
 
           & "${{ steps.innosetup.outputs.path }}" `
-            /DMyAppVersion=${{ steps.version.outputs.value }} `
+            /DMyAppVersion="${{ steps.version.outputs.value }}" `
+            "/DMyAppName=${{ steps.env_meta.outputs.app_name }}" `
+            "/DMyAppId=${{ steps.env_meta.outputs.app_id }}" `
+            "/DMyExeName=${{ steps.env_meta.outputs.exe_name }}.exe" `
+            "/DMyDefaultDirName=${{ steps.env_meta.outputs.install_dir }}" `
             "/DMySourceDir=$sourceDir" `
             "/DMyOutputDir=$outputDir" `
             packaging/windows/focale.iss
@@ -131,7 +195,7 @@ jobs:
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: focale-windows-installer-${{ steps.version.outputs.value }}
+          name: focale-${{ matrix.environment }}-windows-installer-${{ steps.version.outputs.value }}
           path: dist/windows/*.exe
 
       - name: Publish installer to GitHub Release

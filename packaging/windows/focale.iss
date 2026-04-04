@@ -1,6 +1,16 @@
-#define MyAppName "Focale"
+#ifndef MyAppName
+  #define MyAppName "Focale"
+#endif
+#ifndef MyAppId
+  #define MyAppId "11A3125E-D7EA-487D-9998-67E95343F4A5"
+#endif
+#ifndef MyExeName
+  #define MyExeName "focale.exe"
+#endif
+#ifndef MyDefaultDirName
+  #define MyDefaultDirName "{autopf}\Arcsecond\Focale"
+#endif
 #define MyAppPublisher "Arcsecond"
-#define MyAppExeName "focale.exe"
 #ifndef MyAppVersion
   #define MyAppVersion "0.2.0"
 #endif
@@ -12,11 +22,11 @@
 #endif
 
 [Setup]
-AppId={{11A3125E-D7EA-487D-9998-67E95343F4A5}
+AppId={{{#MyAppId}}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\Arcsecond\Focale
+DefaultDirName={#MyDefaultDirName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 DisableProgramGroupPage=yes
@@ -26,17 +36,17 @@ ChangesEnvironment=yes
 Compression=lzma
 SolidCompression=yes
 OutputDir={#MyOutputDir}
-OutputBaseFilename=Focale-Setup-{#MyAppVersion}
+OutputBaseFilename={#MyAppName}-Setup-{#MyAppVersion}
 WizardStyle=modern
 
 [Tasks]
-Name: "modifypath"; Description: "Add Focale to PATH"; GroupDescription: "Additional tasks:"
+Name: "modifypath"; Description: "Add {#MyAppName} to PATH"; GroupDescription: "Additional tasks:"
 
 [Files]
 Source: "{#MySourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\Focale"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyExeName}"
 
 [Code]
 const
