@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -104,10 +105,22 @@ class PlateSolverClient:
             else Path.home() / ".cache" / "focale" / "astrometry"
         )
         cache.mkdir(parents=True, exist_ok=True)
+        index_files = _index_files(cache, set(self.scales))
         try:
-            index_files = _index_files(cache, set(self.scales))
             self._solver = astrometry.Solver(index_files)
-        except Exception as exc:  # pragma: no cover - third-party runtime failures
+        except Exception as exc:
+            # The astrometry library says "loading <path> failed" when a .fits
+            # file on disk is corrupted (e.g. from an interrupted download).
+            # Delete every .fits file mentioned in the error message and retry once.
+            deleted = _delete_mentioned_fits(str(exc), index_files)
+            if deleted:
+                # Re-fetch (re-download) the index list after removing bad files.
+                index_files = _index_files(cache, set(self.scales))
+                try:
+                    self._solver = astrometry.Solver(index_files)
+                    return
+                except Exception as exc2:
+                    exc = exc2
             raise FocaleError(f"Local plate solver failed to initialize: {exc}") from exc
 
 
@@ -138,6 +151,38 @@ def _index_files(cache_dir: Path, scales: set[int]) -> list[Path]:
             )
         )
     return index_files
+
+
+def _delete_mentioned_fits(error_msg: str, index_files: list[Path]) -> bool:
+    """
+    Parse an astrometry error message for .fits paths, delete those files,
+    and return True if at least one file was removed.
+    """
+    # Build a set of known paths for fast membership testing.
+    known = {str(p): p for p in index_files}
+
+    # The library typically says: loading "<path>" failed
+    mentioned = set(re.findall(r'"([^"]+\.fits)"', error_msg))
+    # Also try unquoted paths in case the format varies.
+    mentioned |= set(re.findall(r'((?:/[^\s]+)+\.fits)', error_msg))
+
+    deleted = False
+    for raw_path in mentioned:
+        path = Path(raw_path)
+        if path.exists():
+            try:
+                path.unlink()
+                deleted = True
+            except OSError:
+                pass
+        # Also delete by matching basename against known index files.
+        elif raw_path in known:
+            try:
+                known[raw_path].unlink()
+                deleted = True
+            except OSError:
+                pass
+    return deleted
 
 
 def _size_hint(
