@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
@@ -234,9 +235,8 @@ class FocaleWindow(QMainWindow):
 
         # --- Centering parameters ---
         centering_box = QGroupBox("Centering Parameters")
-        centering_form = QFormLayout(centering_box)
-        centering_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        centering_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        centering_outer = QVBoxLayout(centering_box)
+        centering_outer.setSpacing(8)
 
         centering_note = QLabel(
             "These parameters are used when the Hub triggers a centering procedure. "
@@ -244,37 +244,37 @@ class FocaleWindow(QMainWindow):
             "from your registered Alpaca equipment."
         )
         centering_note.setWordWrap(True)
-        centering_form.addRow("", centering_note)
+        centering_note.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        centering_outer.addWidget(centering_note)
 
-        self.centering_duration_input = QLineEdit(
-            str(centering_config.get("duration", 5.0))
-        )
-        centering_form.addRow("Exposure (s)", self.centering_duration_input)
+        # 2-column grid: (label | field) (label | field)
+        centering_grid = QGridLayout()
+        centering_grid.setHorizontalSpacing(16)
+        centering_grid.setVerticalSpacing(8)
+        centering_grid.setColumnStretch(1, 1)
+        centering_grid.setColumnStretch(3, 1)
 
-        self.centering_max_iter_input = QLineEdit(
-            str(centering_config.get("max_iterations", 10))
-        )
-        centering_form.addRow("Max iterations", self.centering_max_iter_input)
+        def _add_pair(row, col, label_text, widget):
+            lbl = QLabel(label_text)
+            lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            centering_grid.addWidget(lbl, row, col * 2)
+            centering_grid.addWidget(widget, row, col * 2 + 1)
 
-        self.centering_min_peaks_input = QLineEdit(
-            str(centering_config.get("min_peaks", 20))
-        )
-        centering_form.addRow("Min peaks", self.centering_min_peaks_input)
+        self.centering_duration_input = QLineEdit(str(centering_config.get("duration", 5.0)))
+        self.centering_max_iter_input = QLineEdit(str(centering_config.get("max_iterations", 10)))
+        self.centering_min_peaks_input = QLineEdit(str(centering_config.get("min_peaks", 20)))
+        self.centering_success_input = QLineEdit(str(centering_config.get("success_threshold", 10.0)))
+        self.centering_failure_input = QLineEdit(str(centering_config.get("failure_threshold", 300.0)))
+        self.centering_max_dur_adj_input = QLineEdit(str(centering_config.get("max_duration_adjustments", 2)))
 
-        self.centering_success_input = QLineEdit(
-            str(centering_config.get("success_threshold", 10.0))
-        )
-        centering_form.addRow('Success threshold (")', self.centering_success_input)
+        _add_pair(0, 0, "Exposure (s)", self.centering_duration_input)
+        _add_pair(0, 1, "Max iterations", self.centering_max_iter_input)
+        _add_pair(1, 0, "Min peaks", self.centering_min_peaks_input)
+        _add_pair(1, 1, 'Success threshold (")', self.centering_success_input)
+        _add_pair(2, 0, 'Failure threshold (")', self.centering_failure_input)
+        _add_pair(2, 1, "Max exposure doublings", self.centering_max_dur_adj_input)
 
-        self.centering_failure_input = QLineEdit(
-            str(centering_config.get("failure_threshold", 300.0))
-        )
-        centering_form.addRow('Failure threshold (")', self.centering_failure_input)
-
-        self.centering_max_dur_adj_input = QLineEdit(
-            str(centering_config.get("max_duration_adjustments", 2))
-        )
-        centering_form.addRow("Max exposure doublings", self.centering_max_dur_adj_input)
+        centering_outer.addLayout(centering_grid)
         layout.addWidget(centering_box)
 
         # --- Local solver index files ---
@@ -283,9 +283,7 @@ class FocaleWindow(QMainWindow):
         solver_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         solver_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-        self.solver_cache_dir_input = QLineEdit(
-            str(centering_config.get("cache_dir") or "")
-        )
+        self.solver_cache_dir_input = QLineEdit(str(centering_config.get("cache_dir") or ""))
         cache_row = QHBoxLayout()
         cache_row.addWidget(self.solver_cache_dir_input, 1)
         browse_cache_button = QPushButton("Browse")
@@ -304,11 +302,7 @@ class FocaleWindow(QMainWindow):
         button_row.addWidget(save_settings_button)
         button_row.addStretch(1)
         layout.addLayout(button_row)
-
-        self.platesolver_output = QPlainTextEdit()
-        self.platesolver_output.setReadOnly(True)
-        self.platesolver_output.setPlaceholderText("Solver status will appear here.")
-        layout.addWidget(self.platesolver_output, 1)
+        layout.addStretch(1)
 
         return tab
 
@@ -588,9 +582,6 @@ class FocaleWindow(QMainWindow):
                 cache_dir=cache_dir,
                 scales="6",
             ),
-            on_result=lambda payload: self.platesolver_output.setPlainText(
-                self._format_payload(payload)
-            ),
         )
 
     def _save_centering_settings(self) -> None:
@@ -616,9 +607,6 @@ class FocaleWindow(QMainWindow):
                 failure_threshold=failure_thr,
                 max_duration_adjustments=max_dur_adj,
                 cache_dir=cache_dir,
-            ),
-            on_result=lambda _: self.platesolver_output.setPlainText(
-                "Centering settings saved."
             ),
         )
 
