@@ -1,0 +1,115 @@
+name: Windows Installer — Staging
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Derive version
+        id: version
+        shell: pwsh
+        run: |
+          $toml = Get-Content pyproject.toml -Raw
+          if ($toml -match 'version\s*=\s*"([^"]+)"') { $base = $Matches[1] } else { $base = "0.0.0" }
+          $sha = "${{ github.sha }}".Substring(0, 7)
+          $version = "$base-staging.$sha"
+          Write-Host "Version: $version"
+          "value=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Bake staging environment
+        shell: pwsh
+        run: |
+          Set-Content -Path "src/focale/_environment.py" -Value @"
+          # Generated at build time — do not edit.
+          ENVIRONMENT = "staging"
+          "@
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .[dev]
+
+      - name: Build executable
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onedir `
+            --windowed `
+            --name "focale-staging" `
+            --paths src `
+            --collect-submodules arcsecond `
+            --collect-submodules astrometry `
+            --hidden-import astrometry_extension `
+            --collect-submodules focale `
+            src/focale/gui_main.py
+
+      - name: Install Inno Setup
+        id: innosetup
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "$env:RUNNER_TEMP\InnoSetup\ISCC.exe",
+            "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            $installer = Join-Path $env:RUNNER_TEMP "innosetup-6.7.1.exe"
+            $installDir = Join-Path $env:RUNNER_TEMP "InnoSetup"
+            Invoke-WebRequest `
+              -Uri "https://github.com/jrsoftware/issrc/releases/download/is-6_7_1/innosetup-6.7.1.exe" `
+              -OutFile $installer
+            $process = Start-Process -FilePath $installer `
+              -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=$installDir" `
+              -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "Inno Setup install failed: $($process.ExitCode)" }
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw "Unable to locate ISCC.exe." }
+          "path=$iscc" >> $env:GITHUB_OUTPUT
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $sourceDir = (Resolve-Path "dist\focale-staging").Path
+          $outputDir = Join-Path $PWD "dist\windows"
+          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+          & "${{ steps.innosetup.outputs.path }}" `
+            /DMyAppVersion="${{ steps.version.outputs.value }}" `
+            "/DMyAppName=Focale Staging" `
+            "/DMyAppId=5B3A2E10-7C4D-4F9A-B1E8-2D6F0A3C5E71" `
+            "/DMyExeName=focale-staging.exe" `
+            "/DMyDefaultDirName={autopf}\Arcsecond\Focale Staging" `
+            "/DMySourceDir=$sourceDir" `
+            "/DMyOutputDir=$outputDir" `
+            packaging/windows/focale.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: focale-staging-windows-${{ steps.version.outputs.value }}
+          path: dist/windows/*.exe
