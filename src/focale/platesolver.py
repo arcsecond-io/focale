@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 import astrometry
-import httpx
 
 from .exceptions import FocaleError
 
@@ -26,49 +25,39 @@ class PlateSolverClient:
     def __init__(
         self,
         *,
-        service_url: str | None = None,
         cache_dir: str | None = None,
         scales: list[int] | None = None,
+        positional_noise_pixels: float = 1.0,
+        sip_order: int = 3,
+        tune_up_logodds_threshold: float | None = 14.0,
+        output_logodds_threshold: float = 21.0,
+        minimum_quad_size_fraction: float = 0.1,
+        maximum_quads: int = 0,
     ) -> None:
-        self.service_url = (service_url or "").rstrip("/") or None
         self.cache_dir = cache_dir
         self.scales = scales or [6]
-        self._local_solver: astrometry.Solver | None = None
-
-        if not self.service_url:
-            self._init_local_solver()
-
-    @property
-    def mode(self) -> str:
-        return "remote" if self.service_url else "local"
+        self.positional_noise_pixels = positional_noise_pixels
+        self.sip_order = sip_order
+        self.tune_up_logodds_threshold = tune_up_logodds_threshold
+        self.output_logodds_threshold = output_logodds_threshold
+        self.minimum_quad_size_fraction = minimum_quad_size_fraction
+        self.maximum_quads = maximum_quads
+        self._solver: astrometry.Solver | None = None
+        self._init_solver()
 
     @property
     def is_ready(self) -> bool:
-        if self.mode == "remote":
-            return True
-        return self._local_solver is not None
+        return self._solver is not None
 
     def close(self) -> None:
-        if self._local_solver is not None:
-            self._local_solver.close()
-            self._local_solver = None
+        if self._solver is not None:
+            self._solver.close()
+            self._solver = None
 
     def health(self) -> dict[str, Any]:
-        if self.service_url:
-            try:
-                response = httpx.get(f"{self.service_url}/health", timeout=10)
-                response.raise_for_status()
-                payload = response.json()
-            except (httpx.HTTPError, ValueError) as exc:
-                raise FocaleError(f"Remote plate solver health failed: {exc}") from exc
-
-            if not isinstance(payload, dict):
-                raise FocaleError("Remote plate solver health returned a non-object payload.")
-            return payload
-
         if not self.is_ready:
             raise FocaleError("Local plate solver failed to initialize.")
-        return {"ok": True, "mode": "local"}
+        return {"ok": True, "mode": "local", "scales": self.scales}
 
     def solve(
         self,
@@ -80,59 +69,22 @@ class PlateSolverClient:
         lower_arcsec_per_pixel: float | None = None,
         upper_arcsec_per_pixel: float | None = None,
     ) -> PlateSolveResult:
-        payload = {
-            "peaks_xy": peaks_xy,
-            "scales": self.scales,
-            "ra_deg": ra_deg,
-            "dec_deg": dec_deg,
-            "radius_deg": radius_deg,
-            "lower_arcsec_per_pixel": lower_arcsec_per_pixel,
-            "upper_arcsec_per_pixel": upper_arcsec_per_pixel,
-        }
-
-        if self.service_url:
-            return self._solve_remote(payload)
-        return self._solve_local(payload)
-
-    def _init_local_solver(self) -> None:
-        cache = (
-            Path(self.cache_dir)
-            if self.cache_dir
-            else Path.home() / ".cache" / "focale" / "astrometry"
-        )
-        cache.mkdir(parents=True, exist_ok=True)
-
-        try:
-            index_files = _index_files(cache, set(self.scales))
-            self._local_solver = astrometry.Solver(index_files)
-        except Exception as exc:  # pragma: no cover - third-party runtime failures
-            raise FocaleError(f"Local plate solver failed to initialize: {exc}") from exc
-
-    def _solve_remote(self, payload: dict[str, Any]) -> PlateSolveResult:
-        try:
-            response = httpx.post(
-                f"{self.service_url}/platesolve",
-                json=payload,
-                timeout=120,
-            )
-            response.raise_for_status()
-            data = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise FocaleError(f"Remote plate solver request failed: {exc}") from exc
-
-        if not isinstance(data, dict):
-            raise FocaleError("Remote plate solver returned a non-object payload.")
-        return _to_result(data)
-
-    def _solve_local(self, payload: dict[str, Any]) -> PlateSolveResult:
-        if not self._local_solver:
+        if not self._solver:
             raise FocaleError("Local plate solver is unavailable.")
 
-        result = self._local_solver.solve(
-            payload["peaks_xy"],
-            size_hint=_size_hint(payload),
-            position_hint=_position_hint(payload),
-            solution_parameters=astrometry.SolutionParameters(),
+        solution_parameters = astrometry.SolutionParameters(
+            positional_noise_pixels=self.positional_noise_pixels,
+            sip_order=self.sip_order,
+            tune_up_logodds_threshold=self.tune_up_logodds_threshold,
+            output_logodds_threshold=self.output_logodds_threshold,
+            minimum_quad_size_fraction=self.minimum_quad_size_fraction,
+            maximum_quads=self.maximum_quads,
+        )
+        result = self._solver.solve(
+            peaks_xy,
+            size_hint=_size_hint(lower_arcsec_per_pixel, upper_arcsec_per_pixel),
+            position_hint=_position_hint(ra_deg, dec_deg, radius_deg),
+            solution_parameters=solution_parameters,
         )
         if not result.has_match():
             return PlateSolveResult(status="no_match")
@@ -145,18 +97,18 @@ class PlateSolverClient:
             wcs_header={key: value for key, (value, _comment) in match.wcs_fields.items()},
         )
 
-
-def _to_result(data: dict[str, Any]) -> PlateSolveResult:
-    status = str(data.get("status") or "no_match")
-    if status != "match":
-        return PlateSolveResult(status="no_match")
-    return PlateSolveResult(
-        status="match",
-        center_ra_deg=data.get("center_ra_deg"),
-        center_dec_deg=data.get("center_dec_deg"),
-        scale_arcsec_per_pixel=data.get("scale_arcsec_per_pixel"),
-        wcs_header=data.get("wcs_header"),
-    )
+    def _init_solver(self) -> None:
+        cache = (
+            Path(self.cache_dir)
+            if self.cache_dir
+            else Path.home() / ".cache" / "focale" / "astrometry"
+        )
+        cache.mkdir(parents=True, exist_ok=True)
+        try:
+            index_files = _index_files(cache, set(self.scales))
+            self._solver = astrometry.Solver(index_files)
+        except Exception as exc:  # pragma: no cover - third-party runtime failures
+            raise FocaleError(f"Local plate solver failed to initialize: {exc}") from exc
 
 
 def _index_files(cache_dir: Path, scales: set[int]) -> list[Path]:
@@ -188,9 +140,10 @@ def _index_files(cache_dir: Path, scales: set[int]) -> list[Path]:
     return index_files
 
 
-def _size_hint(payload: dict[str, Any]) -> astrometry.SizeHint | None:
-    lower = payload["lower_arcsec_per_pixel"]
-    upper = payload["upper_arcsec_per_pixel"]
+def _size_hint(
+    lower: float | None,
+    upper: float | None,
+) -> astrometry.SizeHint | None:
     if lower is None and upper is None:
         return None
     return astrometry.SizeHint(
@@ -203,14 +156,15 @@ def _size_hint(payload: dict[str, Any]) -> astrometry.SizeHint | None:
     )
 
 
-def _position_hint(payload: dict[str, Any]) -> astrometry.PositionHint | None:
-    ra_deg = payload["ra_deg"]
-    dec_deg = payload["dec_deg"]
-    radius_deg = payload["radius_deg"]
+def _position_hint(
+    ra_deg: float | None,
+    dec_deg: float | None,
+    radius_deg: float | None,
+) -> astrometry.PositionHint | None:
     if ra_deg is None and dec_deg is None and radius_deg is None:
         return None
     if ra_deg is None or dec_deg is None:
-        raise FocaleError("Local plate solver position hint requires both RA and Dec.")
+        raise FocaleError("Position hint requires both RA and Dec.")
     return astrometry.PositionHint(
         ra_deg=ra_deg,
         dec_deg=dec_deg,

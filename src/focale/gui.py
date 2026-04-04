@@ -64,7 +64,6 @@ class FunctionWorker(QRunnable):
             self.signals.finished.emit()
 
 
-
 class FocaleWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -97,30 +96,36 @@ class FocaleWindow(QMainWindow):
         layout.addWidget(subheading)
 
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_arcsecond_tab(), "Focale")
+        self.tabs.addTab(self._build_account_tab(), "Account")
+        self.tabs.addTab(self._build_alpaca_tab(), "Alpaca Server")
         self.tabs.addTab(self._build_platesolver_tab(), "Plate Solver")
         layout.addWidget(self.tabs, 1)
 
         self.log_output = QPlainTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setPlaceholderText("Action logs and JSON results will appear here.")
-        self.log_output.setMinimumHeight(220)
+        self.log_output.setMinimumHeight(180)
         layout.addWidget(self.log_output)
 
         self._refresh_status_summary()
 
-    def _build_arcsecond_tab(self) -> QWidget:
+    # ------------------------------------------------------------------ #
+    # Tab builders                                                         #
+    # ------------------------------------------------------------------ #
+
+    def _build_account_tab(self) -> QWidget:
         tab = QWidget()
         layout = QGridLayout(tab)
         layout.setSpacing(12)
         layout.setColumnStretch(0, 3)
         layout.setColumnStretch(1, 2)
-        layout.setRowStretch(3, 1)
 
-        session_box = QGroupBox("Arcsecond Account")
-        session_form = QFormLayout(session_box)
-        session_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        session_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        # --- Focale Account ---
+        account_box = QGroupBox("Focale Account")
+        account_form = QFormLayout(account_box)
+        account_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        account_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
         self.username_input = QLineEdit(self._settings.get("username") or "")
         self.username_input.setMinimumWidth(220)
         self.secret_input = QLineEdit()
@@ -128,34 +133,36 @@ class FocaleWindow(QMainWindow):
         self.secret_input.setEchoMode(QLineEdit.Password)
         self.secret_input.setPlaceholderText("Only needed when signing in again")
         self.environment_label = QLabel(
-            str(self._settings.get("environment_label") or "Arcsecond Cloud")
+            str(self._settings.get("environment_label") or "Focale Cloud")
         )
-        session_form.addRow("Username", self.username_input)
-        session_form.addRow("Password", self.secret_input)
-        session_form.addRow("Environment", self.environment_label)
+        account_form.addRow("Username", self.username_input)
+        account_form.addRow("Password", self.secret_input)
+        account_form.addRow("Environment", self.environment_label)
 
-        session_buttons = QHBoxLayout()
+        account_buttons = QHBoxLayout()
         login_button = QPushButton("Sign In")
         login_button.clicked.connect(self._login)
         refresh_button = QPushButton("Refresh State")
         refresh_button.clicked.connect(self._refresh_status)
-        session_buttons.addWidget(login_button)
-        session_buttons.addWidget(refresh_button)
-        session_buttons.addStretch(1)
-        session_form.addRow("", session_buttons)
-        session_note = QLabel(
-            "Focale keeps your Arcsecond session locally, so you usually only need to sign in once."
-        )
-        session_note.setWordWrap(True)
-        session_form.addRow("", session_note)
-        layout.addWidget(session_box, 0, 0)
+        account_buttons.addWidget(login_button)
+        account_buttons.addWidget(refresh_button)
+        account_buttons.addStretch(1)
+        account_form.addRow("", account_buttons)
 
+        account_note = QLabel(
+            "Focale keeps your session locally, so you usually only need to sign in once."
+        )
+        account_note.setWordWrap(True)
+        account_form.addRow("", account_note)
+        layout.addWidget(account_box, 0, 0)
+
+        # --- Hub ---
         hub_box = QGroupBox("Hub")
         hub_form = QFormLayout(hub_box)
         hub_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         hub_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
         hub_note = QLabel(
-            "The Hub connection follows your selected Arcsecond environment automatically."
+            "The Hub connection follows your Focale environment automatically."
         )
         hub_note.setWordWrap(True)
         hub_form.addRow("", hub_note)
@@ -171,22 +178,7 @@ class FocaleWindow(QMainWindow):
         hub_form.addRow("", hub_buttons)
         layout.addWidget(hub_box, 1, 0)
 
-        alpaca_box = QGroupBox("Local Alpaca")
-        alpaca_form = QFormLayout(alpaca_box)
-        self.local_alpaca_summary = QLabel("No local scan yet.")
-        self.local_alpaca_summary.setWordWrap(True)
-        alpaca_buttons = QHBoxLayout()
-        discover_alpaca_button = QPushButton("Check Local Alpaca Servers")
-        discover_alpaca_button.clicked.connect(self._discover_local_alpaca)
-        register_alpaca_button = QPushButton("Register Server To Focale")
-        register_alpaca_button.clicked.connect(self._register_local_alpaca)
-        alpaca_buttons.addWidget(discover_alpaca_button)
-        alpaca_buttons.addWidget(register_alpaca_button)
-        alpaca_buttons.addStretch(1)
-        alpaca_form.addRow("", self.local_alpaca_summary)
-        alpaca_form.addRow("", self._wrap_layout(alpaca_buttons))
-        layout.addWidget(alpaca_box, 2, 0)
-
+        # --- State table (right column, spans both rows) ---
         status_box = QGroupBox("State")
         status_layout = QVBoxLayout(status_box)
         self.state_table = QTableWidget(0, 2)
@@ -196,59 +188,126 @@ class FocaleWindow(QMainWindow):
         self.state_table.setSelectionMode(QTableWidget.NoSelection)
         self.state_table.horizontalHeader().setStretchLastSection(True)
         self.state_table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft)
-        self.state_table.setMinimumWidth(320)
+        self.state_table.setMinimumWidth(300)
         status_layout.addWidget(self.state_table)
-        layout.addWidget(status_box, 0, 1, 3, 1)
+        layout.addWidget(status_box, 0, 1, 2, 1)
+
+        layout.setRowStretch(2, 1)
+
+        return tab
+
+    def _build_alpaca_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
+
+        alpaca_box = QGroupBox("Local Alpaca Servers")
+        alpaca_form = QFormLayout(alpaca_box)
+        alpaca_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        self.local_alpaca_summary = QLabel("No local scan yet.")
+        self.local_alpaca_summary.setWordWrap(True)
+        alpaca_form.addRow("", self.local_alpaca_summary)
+
+        alpaca_buttons = QHBoxLayout()
+        discover_alpaca_button = QPushButton("Check Local Alpaca Servers")
+        discover_alpaca_button.clicked.connect(self._discover_local_alpaca)
+        register_alpaca_button = QPushButton("Register Server To Focale")
+        register_alpaca_button.clicked.connect(self._register_local_alpaca)
+        alpaca_buttons.addWidget(discover_alpaca_button)
+        alpaca_buttons.addWidget(register_alpaca_button)
+        alpaca_buttons.addStretch(1)
+        alpaca_form.addRow("", self._wrap_layout(alpaca_buttons))
+        layout.addWidget(alpaca_box)
+        layout.addStretch(1)
 
         return tab
 
     def _build_platesolver_tab(self) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout(tab)
+        layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(12)
 
-        solver_box = QGroupBox("Solver")
-        solver_form = QFormLayout(solver_box)
-        self.solver_service_url_input = QLineEdit()
-        self.solver_cache_dir_input = QLineEdit()
-        self.solver_scales_input = QLineEdit("6")
+        top_row = QHBoxLayout()
+        top_row.setSpacing(12)
 
+        # --- Solver settings (left) ---
+        settings_box = QGroupBox("Solver Settings")
+        settings_form = QFormLayout(settings_box)
+        settings_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        settings_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.solver_cache_dir_input = QLineEdit()
         cache_row = QHBoxLayout()
         cache_row.addWidget(self.solver_cache_dir_input, 1)
         browse_cache_button = QPushButton("Browse")
         browse_cache_button.clicked.connect(self._browse_cache_dir)
         cache_row.addWidget(browse_cache_button)
+        settings_form.addRow("Cache directory", self._wrap_layout(cache_row))
 
-        solver_form.addRow("Remote service URL", self.solver_service_url_input)
-        solver_form.addRow("Cache directory", self._wrap_layout(cache_row))
-        solver_form.addRow("Scales", self.solver_scales_input)
-        layout.addWidget(solver_box)
+        self.solver_scales_input = QLineEdit("6")
+        settings_form.addRow("Scales (0–19)", self.solver_scales_input)
 
-        solve_box = QGroupBox("Solve")
-        solve_grid = QGridLayout(solve_box)
+        self.solver_noise_input = QLineEdit("1.0")
+        settings_form.addRow("Positional noise (px)", self.solver_noise_input)
+
+        self.solver_sip_order_input = QLineEdit("3")
+        settings_form.addRow("SIP order", self.solver_sip_order_input)
+
+        self.solver_tune_logodds_input = QLineEdit("14.0")
+        settings_form.addRow("Tune-up log-odds", self.solver_tune_logodds_input)
+
+        self.solver_output_logodds_input = QLineEdit("21.0")
+        settings_form.addRow("Output log-odds", self.solver_output_logodds_input)
+
+        self.solver_min_quad_input = QLineEdit("0.1")
+        settings_form.addRow("Min quad size fraction", self.solver_min_quad_input)
+
+        self.solver_max_quads_input = QLineEdit("0")
+        settings_form.addRow("Max quads (0 = unlimited)", self.solver_max_quads_input)
+
+        top_row.addWidget(settings_box, 1)
+
+        # --- Image hints (right) ---
+        hints_box = QGroupBox("Image Hints")
+        hints_form = QFormLayout(hints_box)
+        hints_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        hints_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
         self.peaks_file_input = QLineEdit()
+        peaks_row = QHBoxLayout()
+        peaks_row.addWidget(self.peaks_file_input, 1)
         browse_peaks_button = QPushButton("Browse")
         browse_peaks_button.clicked.connect(self._browse_peaks_file)
+        peaks_row.addWidget(browse_peaks_button)
+        hints_form.addRow("Peaks file", self._wrap_layout(peaks_row))
+
         self.ra_input = QLineEdit()
+        self.ra_input.setPlaceholderText("optional")
+        hints_form.addRow("RA hint (deg)", self.ra_input)
+
         self.dec_input = QLineEdit()
+        self.dec_input.setPlaceholderText("optional")
+        hints_form.addRow("Dec hint (deg)", self.dec_input)
+
         self.radius_input = QLineEdit()
+        self.radius_input.setPlaceholderText("optional")
+        hints_form.addRow("Search radius (deg)", self.radius_input)
+
         self.lower_scale_input = QLineEdit()
+        self.lower_scale_input.setPlaceholderText("optional")
+        hints_form.addRow("Lower arcsec/px", self.lower_scale_input)
+
         self.upper_scale_input = QLineEdit()
+        self.upper_scale_input.setPlaceholderText("optional")
+        hints_form.addRow("Upper arcsec/px", self.upper_scale_input)
 
-        solve_grid.addWidget(QLabel("Peaks file"), 0, 0)
-        solve_grid.addWidget(self.peaks_file_input, 0, 1)
-        solve_grid.addWidget(browse_peaks_button, 0, 2)
-        solve_grid.addWidget(QLabel("RA (deg)"), 1, 0)
-        solve_grid.addWidget(self.ra_input, 1, 1)
-        solve_grid.addWidget(QLabel("Dec (deg)"), 1, 2)
-        solve_grid.addWidget(self.dec_input, 1, 3)
-        solve_grid.addWidget(QLabel("Radius (deg)"), 2, 0)
-        solve_grid.addWidget(self.radius_input, 2, 1)
-        solve_grid.addWidget(QLabel("Lower arcsec/px"), 2, 2)
-        solve_grid.addWidget(self.lower_scale_input, 2, 3)
-        solve_grid.addWidget(QLabel("Upper arcsec/px"), 3, 0)
-        solve_grid.addWidget(self.upper_scale_input, 3, 1)
+        top_row.addWidget(hints_box, 1)
+        layout.addLayout(top_row)
 
+        # --- Buttons ---
         button_row = QHBoxLayout()
         status_button = QPushButton("Solver Status")
         status_button.clicked.connect(self._platesolver_status)
@@ -257,17 +316,18 @@ class FocaleWindow(QMainWindow):
         button_row.addWidget(status_button)
         button_row.addWidget(solve_button)
         button_row.addStretch(1)
-
-        layout.addWidget(solve_box)
         layout.addLayout(button_row)
 
         self.platesolver_output = QPlainTextEdit()
         self.platesolver_output.setReadOnly(True)
         self.platesolver_output.setPlaceholderText("Plate solve results will appear here.")
-        self.platesolver_output.setMinimumHeight(220)
-        layout.addWidget(self.platesolver_output)
+        layout.addWidget(self.platesolver_output, 1)
 
         return tab
+
+    # ------------------------------------------------------------------ #
+    # Helpers                                                              #
+    # ------------------------------------------------------------------ #
 
     def _wrap_layout(self, layout) -> QWidget:
         widget = QWidget()
@@ -348,6 +408,10 @@ class FocaleWindow(QMainWindow):
         value = str(self._settings.get("hub_url") or "").strip()
         return value or None
 
+    # ------------------------------------------------------------------ #
+    # Account tab actions                                                  #
+    # ------------------------------------------------------------------ #
+
     def _login(self) -> None:
         api_server = self._api_server()
         username = self.username_input.text().strip()
@@ -370,7 +434,7 @@ class FocaleWindow(QMainWindow):
         self.secret_input.clear()
         self._settings = services.user_settings()
         self.environment_label.setText(
-            str(self._settings.get("environment_label") or "Arcsecond Cloud")
+            str(self._settings.get("environment_label") or "Focale Cloud")
         )
         self._refresh_status_summary()
 
@@ -404,7 +468,7 @@ class FocaleWindow(QMainWindow):
         rows = [
             ("Signed in", "Yes" if payload.get("logged_in") else "No"),
             ("Username", str(payload.get("username") or "Not signed in")),
-            ("Environment", str(payload.get("environment_label") or "Arcsecond Cloud")),
+            ("Environment", str(payload.get("environment_label") or "Focale Cloud")),
             ("Stored installations", str(len(payload.get("installations") or {}))),
             ("Known Alpaca servers", str(payload.get("known_alpaca_servers") or 0)),
             ("Focale version", str(payload.get("focale_version") or __version__)),
@@ -452,6 +516,10 @@ class FocaleWindow(QMainWindow):
                 echo=log,
             ),
         )
+
+    # ------------------------------------------------------------------ #
+    # Alpaca tab actions                                                   #
+    # ------------------------------------------------------------------ #
 
     def _discover_local_alpaca(self) -> None:
         self._start_action(
@@ -521,14 +589,16 @@ class FocaleWindow(QMainWindow):
             f"Found {count} local server(s): {names}{extra}.{registration}{devices}{resources}"
         )
 
+    # ------------------------------------------------------------------ #
+    # Plate Solver tab actions                                             #
+    # ------------------------------------------------------------------ #
+
     def _platesolver_status(self) -> None:
-        service_url = self._clean(self.solver_service_url_input)
         cache_dir = self._clean(self.solver_cache_dir_input)
         scales = self.solver_scales_input.text().strip() or "6"
         self._start_action(
             "Plate solver status",
             lambda _log: services.platesolver_status(
-                service_url=service_url,
                 cache_dir=cache_dir,
                 scales=scales,
             ),
@@ -543,27 +613,42 @@ class FocaleWindow(QMainWindow):
             QMessageBox.warning(self, "Focale", "Select a peaks JSON file first.")
             return
 
-        service_url = self._clean(self.solver_service_url_input)
         cache_dir = self._clean(self.solver_cache_dir_input)
         scales = self.solver_scales_input.text().strip() or "6"
-        ra_deg = self._optional_float(self.ra_input)
-        dec_deg = self._optional_float(self.dec_input)
-        radius_deg = self._optional_float(self.radius_input)
-        lower_arcsec_per_pixel = self._optional_float(self.lower_scale_input)
-        upper_arcsec_per_pixel = self._optional_float(self.upper_scale_input)
+
+        try:
+            positional_noise = self._required_float(self.solver_noise_input, "Positional noise")
+            sip_order = self._required_int(self.solver_sip_order_input, "SIP order")
+            tune_logodds = self._optional_float(self.solver_tune_logodds_input)
+            output_logodds = self._required_float(self.solver_output_logodds_input, "Output log-odds")
+            min_quad = self._required_float(self.solver_min_quad_input, "Min quad size fraction")
+            max_quads = self._required_int(self.solver_max_quads_input, "Max quads")
+            ra_deg = self._optional_float(self.ra_input)
+            dec_deg = self._optional_float(self.dec_input)
+            radius_deg = self._optional_float(self.radius_input)
+            lower_arcsec = self._optional_float(self.lower_scale_input)
+            upper_arcsec = self._optional_float(self.upper_scale_input)
+        except FocaleError as exc:
+            QMessageBox.warning(self, "Focale", str(exc))
+            return
 
         self._start_action(
             "Plate solve",
             lambda _log: services.platesolver_solve(
                 peaks_file=Path(peaks_path),
-                service_url=service_url,
                 cache_dir=cache_dir,
                 scales=scales,
+                positional_noise_pixels=positional_noise,
+                sip_order=sip_order,
+                tune_up_logodds_threshold=tune_logodds,
+                output_logodds_threshold=output_logodds,
+                minimum_quad_size_fraction=min_quad,
+                maximum_quads=max_quads,
                 ra_deg=ra_deg,
                 dec_deg=dec_deg,
                 radius_deg=radius_deg,
-                lower_arcsec_per_pixel=lower_arcsec_per_pixel,
-                upper_arcsec_per_pixel=upper_arcsec_per_pixel,
+                lower_arcsec_per_pixel=lower_arcsec,
+                upper_arcsec_per_pixel=upper_arcsec,
             ),
             on_result=lambda payload: self.platesolver_output.setPlainText(
                 self._format_payload(payload)
@@ -584,6 +669,10 @@ class FocaleWindow(QMainWindow):
         if path:
             self.peaks_file_input.setText(path)
 
+    # ------------------------------------------------------------------ #
+    # Input helpers                                                        #
+    # ------------------------------------------------------------------ #
+
     def _clean(self, line_edit: QLineEdit) -> str | None:
         value = line_edit.text().strip()
         return value or None
@@ -595,7 +684,21 @@ class FocaleWindow(QMainWindow):
         try:
             return float(value)
         except ValueError as exc:
-            raise FocaleError(f"Invalid numeric value `{value}`.") from exc
+            raise FocaleError(f"Invalid number: '{value}'.") from exc
+
+    def _required_float(self, line_edit: QLineEdit, label: str) -> float:
+        value = line_edit.text().strip()
+        try:
+            return float(value)
+        except ValueError as exc:
+            raise FocaleError(f"{label}: '{value}' is not a valid number.") from exc
+
+    def _required_int(self, line_edit: QLineEdit, label: str) -> int:
+        value = line_edit.text().strip()
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise FocaleError(f"{label}: '{value}' is not a valid integer.") from exc
 
 
 def main() -> int:

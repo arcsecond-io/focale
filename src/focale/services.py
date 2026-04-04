@@ -30,17 +30,17 @@ Logger = Callable[[str], None]
 
 ENVIRONMENT_PRESETS: dict[str, dict[str, str]] = {
     "production": {
-        "label": "Arcsecond Cloud",
+        "label": "Focale Cloud",
         "api_server": "https://api.arcsecond.io",
         "hub_url": "wss://hub.arcsecond.io/ws/agent",
     },
     "staging": {
-        "label": "Arcsecond Staging",
+        "label": "Focale Staging",
         "api_server": "https://api.arcsecond.dev",
         "hub_url": "wss://hub.arcsecond.dev/ws/agent",
     },
     "dev": {
-        "label": "Arcsecond Dev",
+        "label": "Focale Dev",
         "api_server": "http://localhost:8000",
         "hub_url": "ws://localhost:8002/ws/agent",
     },
@@ -1331,12 +1331,10 @@ def doctor(
 
 def platesolver_status(
     *,
-    service_url: str | None,
     cache_dir: str | None,
     scales: str,
 ) -> dict[str, Any]:
     solver = PlateSolverClient(
-        service_url=service_url,
         cache_dir=cache_dir,
         scales=parse_scales(scales),
     )
@@ -1344,15 +1342,20 @@ def platesolver_status(
         health = solver.health()
     finally:
         solver.close()
-    return {"mode": solver.mode, "health": health}
+    return {"mode": "local", "health": health}
 
 
 def platesolver_solve(
     *,
     peaks_file: Path,
-    service_url: str | None,
     cache_dir: str | None,
     scales: str,
+    positional_noise_pixels: float,
+    sip_order: int,
+    tune_up_logodds_threshold: float | None,
+    output_logodds_threshold: float,
+    minimum_quad_size_fraction: float,
+    maximum_quads: int,
     ra_deg: float | None,
     dec_deg: float | None,
     radius_deg: float | None,
@@ -1361,9 +1364,14 @@ def platesolver_solve(
 ) -> dict[str, Any]:
     peaks_xy = load_peaks_file(peaks_file)
     solver = PlateSolverClient(
-        service_url=service_url,
         cache_dir=cache_dir,
         scales=parse_scales(scales),
+        positional_noise_pixels=positional_noise_pixels,
+        sip_order=sip_order,
+        tune_up_logodds_threshold=tune_up_logodds_threshold,
+        output_logodds_threshold=output_logodds_threshold,
+        minimum_quad_size_fraction=minimum_quad_size_fraction,
+        maximum_quads=maximum_quads,
     )
     try:
         result = solver.solve(
