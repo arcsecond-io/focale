@@ -22,6 +22,7 @@ from .alpaca import (
 from .arcsecond_client import ArcsecondGateway
 from .exceptions import ArcsecondGatewayError, FocaleError
 from .hub import HubClient
+from .centering import CenteringLoop
 from .platesolver import PlateSolverClient
 from .state import AlpacaServerRecord, FocaleState, InstallationRecord
 
@@ -1345,43 +1346,38 @@ def platesolver_status(
     return {"mode": "local", "health": health}
 
 
-def platesolver_solve(
+def center_on_coordinates(
     *,
-    peaks_file: Path,
+    camera_address: str,
+    camera_number: int,
+    telescope_address: str,
+    telescope_number: int,
+    target_ra_hours: float,
+    target_dec_deg: float,
     cache_dir: str | None,
     scales: str,
-    positional_noise_pixels: float,
-    sip_order: int,
-    tune_up_logodds_threshold: float | None,
-    output_logodds_threshold: float,
-    minimum_quad_size_fraction: float,
-    maximum_quads: int,
-    ra_deg: float | None,
-    dec_deg: float | None,
-    radius_deg: float | None,
-    lower_arcsec_per_pixel: float | None,
-    upper_arcsec_per_pixel: float | None,
+    duration: float,
+    max_iterations: int,
+    min_peaks: int,
+    success_threshold: float,
+    failure_threshold: float,
+    max_duration_adjustments: int,
+    echo: Logger,
 ) -> dict[str, Any]:
-    peaks_xy = load_peaks_file(peaks_file)
-    solver = PlateSolverClient(
+    loop = CenteringLoop(
+        camera_address=camera_address,
+        camera_number=camera_number,
+        telescope_address=telescope_address,
+        telescope_number=telescope_number,
+        target_ra_hours=target_ra_hours,
+        target_dec_deg=target_dec_deg,
         cache_dir=cache_dir,
         scales=parse_scales(scales),
-        positional_noise_pixels=positional_noise_pixels,
-        sip_order=sip_order,
-        tune_up_logodds_threshold=tune_up_logodds_threshold,
-        output_logodds_threshold=output_logodds_threshold,
-        minimum_quad_size_fraction=minimum_quad_size_fraction,
-        maximum_quads=maximum_quads,
+        duration=duration,
+        max_iterations=max_iterations,
+        min_peaks=min_peaks,
+        success_threshold=success_threshold,
+        failure_threshold=failure_threshold,
+        max_duration_adjustments=max_duration_adjustments,
     )
-    try:
-        result = solver.solve(
-            peaks_xy=peaks_xy,
-            ra_deg=ra_deg,
-            dec_deg=dec_deg,
-            radius_deg=radius_deg,
-            lower_arcsec_per_pixel=lower_arcsec_per_pixel,
-            upper_arcsec_per_pixel=upper_arcsec_per_pixel,
-        )
-    finally:
-        solver.close()
-    return result.to_dict()
+    return loop.run(echo).to_dict()

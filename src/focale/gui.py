@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sys
 import traceback
-from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal, Slot
@@ -233,11 +232,76 @@ class FocaleWindow(QMainWindow):
         top_row = QHBoxLayout()
         top_row.setSpacing(12)
 
-        # --- Solver settings (left) ---
-        settings_box = QGroupBox("Solver Settings")
-        settings_form = QFormLayout(settings_box)
-        settings_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        settings_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        # --- Equipment + Target (left) ---
+        equip_box = QGroupBox("Equipment & Target")
+        equip_form = QFormLayout(equip_box)
+        equip_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        equip_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        cam_row = QHBoxLayout()
+        self.camera_address_input = QLineEdit()
+        self.camera_address_input.setPlaceholderText("http://localhost:11111")
+        self.camera_number_input = QLineEdit("0")
+        self.camera_number_input.setFixedWidth(36)
+        cam_row.addWidget(self.camera_address_input, 1)
+        cam_row.addWidget(QLabel("#"))
+        cam_row.addWidget(self.camera_number_input)
+        equip_form.addRow("Camera", self._wrap_layout(cam_row))
+
+        tel_row = QHBoxLayout()
+        self.telescope_address_input = QLineEdit()
+        self.telescope_address_input.setPlaceholderText("http://localhost:11111")
+        self.telescope_number_input = QLineEdit("0")
+        self.telescope_number_input.setFixedWidth(36)
+        tel_row.addWidget(self.telescope_address_input, 1)
+        tel_row.addWidget(QLabel("#"))
+        tel_row.addWidget(self.telescope_number_input)
+        equip_form.addRow("Telescope", self._wrap_layout(tel_row))
+
+        equip_form.addRow(QLabel(""))  # spacer
+
+        self.target_ra_input = QLineEdit()
+        self.target_ra_input.setPlaceholderText("decimal hours")
+        equip_form.addRow("Target RA (h)", self.target_ra_input)
+
+        self.target_dec_input = QLineEdit()
+        self.target_dec_input.setPlaceholderText("degrees")
+        equip_form.addRow("Target Dec (°)", self.target_dec_input)
+
+        top_row.addWidget(equip_box, 1)
+
+        # --- Centering parameters (right) ---
+        centering_box = QGroupBox("Centering Parameters")
+        centering_form = QFormLayout(centering_box)
+        centering_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        centering_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.centering_duration_input = QLineEdit("5")
+        centering_form.addRow("Exposure (s)", self.centering_duration_input)
+
+        self.centering_max_iter_input = QLineEdit("10")
+        centering_form.addRow("Max iterations", self.centering_max_iter_input)
+
+        self.centering_min_peaks_input = QLineEdit("20")
+        centering_form.addRow("Min peaks", self.centering_min_peaks_input)
+
+        self.centering_success_input = QLineEdit("10")
+        centering_form.addRow("Success threshold (\")", self.centering_success_input)
+
+        self.centering_failure_input = QLineEdit("300")
+        centering_form.addRow("Failure threshold (\")", self.centering_failure_input)
+
+        self.centering_max_dur_adj_input = QLineEdit("2")
+        centering_form.addRow("Max exposure doublings", self.centering_max_dur_adj_input)
+
+        top_row.addWidget(centering_box, 1)
+        layout.addLayout(top_row)
+
+        # --- Local solver index files (full width) ---
+        solver_box = QGroupBox("Local Solver Index Files")
+        solver_form = QFormLayout(solver_box)
+        solver_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        solver_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         self.solver_cache_dir_input = QLineEdit()
         cache_row = QHBoxLayout()
@@ -245,82 +309,26 @@ class FocaleWindow(QMainWindow):
         browse_cache_button = QPushButton("Browse")
         browse_cache_button.clicked.connect(self._browse_cache_dir)
         cache_row.addWidget(browse_cache_button)
-        settings_form.addRow("Cache directory", self._wrap_layout(cache_row))
+        solver_form.addRow("Cache directory", self._wrap_layout(cache_row))
 
         self.solver_scales_input = QLineEdit("6")
-        settings_form.addRow("Scales (0–19)", self.solver_scales_input)
-
-        self.solver_noise_input = QLineEdit("1.0")
-        settings_form.addRow("Positional noise (px)", self.solver_noise_input)
-
-        self.solver_sip_order_input = QLineEdit("3")
-        settings_form.addRow("SIP order", self.solver_sip_order_input)
-
-        self.solver_tune_logodds_input = QLineEdit("14.0")
-        settings_form.addRow("Tune-up log-odds", self.solver_tune_logodds_input)
-
-        self.solver_output_logodds_input = QLineEdit("21.0")
-        settings_form.addRow("Output log-odds", self.solver_output_logodds_input)
-
-        self.solver_min_quad_input = QLineEdit("0.1")
-        settings_form.addRow("Min quad size fraction", self.solver_min_quad_input)
-
-        self.solver_max_quads_input = QLineEdit("0")
-        settings_form.addRow("Max quads (0 = unlimited)", self.solver_max_quads_input)
-
-        top_row.addWidget(settings_box, 1)
-
-        # --- Image hints (right) ---
-        hints_box = QGroupBox("Image Hints")
-        hints_form = QFormLayout(hints_box)
-        hints_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        hints_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
-        self.peaks_file_input = QLineEdit()
-        peaks_row = QHBoxLayout()
-        peaks_row.addWidget(self.peaks_file_input, 1)
-        browse_peaks_button = QPushButton("Browse")
-        browse_peaks_button.clicked.connect(self._browse_peaks_file)
-        peaks_row.addWidget(browse_peaks_button)
-        hints_form.addRow("Peaks file", self._wrap_layout(peaks_row))
-
-        self.ra_input = QLineEdit()
-        self.ra_input.setPlaceholderText("optional")
-        hints_form.addRow("RA hint (deg)", self.ra_input)
-
-        self.dec_input = QLineEdit()
-        self.dec_input.setPlaceholderText("optional")
-        hints_form.addRow("Dec hint (deg)", self.dec_input)
-
-        self.radius_input = QLineEdit()
-        self.radius_input.setPlaceholderText("optional")
-        hints_form.addRow("Search radius (deg)", self.radius_input)
-
-        self.lower_scale_input = QLineEdit()
-        self.lower_scale_input.setPlaceholderText("optional")
-        hints_form.addRow("Lower arcsec/px", self.lower_scale_input)
-
-        self.upper_scale_input = QLineEdit()
-        self.upper_scale_input.setPlaceholderText("optional")
-        hints_form.addRow("Upper arcsec/px", self.upper_scale_input)
-
-        top_row.addWidget(hints_box, 1)
-        layout.addLayout(top_row)
+        solver_form.addRow("Scales (0–19)", self.solver_scales_input)
+        layout.addWidget(solver_box)
 
         # --- Buttons ---
         button_row = QHBoxLayout()
-        status_button = QPushButton("Solver Status")
-        status_button.clicked.connect(self._platesolver_status)
-        solve_button = QPushButton("Solve")
-        solve_button.clicked.connect(self._platesolver_solve)
-        button_row.addWidget(status_button)
-        button_row.addWidget(solve_button)
+        check_solver_button = QPushButton("Check Solver")
+        check_solver_button.clicked.connect(self._platesolver_status)
+        center_button = QPushButton("Center")
+        center_button.clicked.connect(self._center_on_coordinates)
+        button_row.addWidget(check_solver_button)
+        button_row.addWidget(center_button)
         button_row.addStretch(1)
         layout.addLayout(button_row)
 
         self.platesolver_output = QPlainTextEdit()
         self.platesolver_output.setReadOnly(True)
-        self.platesolver_output.setPlaceholderText("Plate solve results will appear here.")
+        self.platesolver_output.setPlaceholderText("Centering progress and results will appear here.")
         layout.addWidget(self.platesolver_output, 1)
 
         return tab
@@ -597,7 +605,7 @@ class FocaleWindow(QMainWindow):
         cache_dir = self._clean(self.solver_cache_dir_input)
         scales = self.solver_scales_input.text().strip() or "6"
         self._start_action(
-            "Plate solver status",
+            "Check solver",
             lambda _log: services.platesolver_status(
                 cache_dir=cache_dir,
                 scales=scales,
@@ -607,50 +615,55 @@ class FocaleWindow(QMainWindow):
             ),
         )
 
-    def _platesolver_solve(self) -> None:
-        peaks_path = self.peaks_file_input.text().strip()
-        if not peaks_path:
-            QMessageBox.warning(self, "Focale", "Select a peaks JSON file first.")
-            return
-
-        cache_dir = self._clean(self.solver_cache_dir_input)
-        scales = self.solver_scales_input.text().strip() or "6"
-
+    def _center_on_coordinates(self) -> None:
         try:
-            positional_noise = self._required_float(self.solver_noise_input, "Positional noise")
-            sip_order = self._required_int(self.solver_sip_order_input, "SIP order")
-            tune_logodds = self._optional_float(self.solver_tune_logodds_input)
-            output_logodds = self._required_float(self.solver_output_logodds_input, "Output log-odds")
-            min_quad = self._required_float(self.solver_min_quad_input, "Min quad size fraction")
-            max_quads = self._required_int(self.solver_max_quads_input, "Max quads")
-            ra_deg = self._optional_float(self.ra_input)
-            dec_deg = self._optional_float(self.dec_input)
-            radius_deg = self._optional_float(self.radius_input)
-            lower_arcsec = self._optional_float(self.lower_scale_input)
-            upper_arcsec = self._optional_float(self.upper_scale_input)
+            camera_address = self.camera_address_input.text().strip()
+            camera_number = self._required_int(self.camera_number_input, "Camera device number")
+            telescope_address = self.telescope_address_input.text().strip()
+            telescope_number = self._required_int(self.telescope_number_input, "Telescope device number")
+            target_ra = self._required_float(self.target_ra_input, "Target RA")
+            target_dec = self._required_float(self.target_dec_input, "Target Dec")
+            duration = self._required_float(self.centering_duration_input, "Exposure")
+            max_iter = self._required_int(self.centering_max_iter_input, "Max iterations")
+            min_peaks = self._required_int(self.centering_min_peaks_input, "Min peaks")
+            success_thr = self._required_float(self.centering_success_input, "Success threshold")
+            failure_thr = self._required_float(self.centering_failure_input, "Failure threshold")
+            max_dur_adj = self._required_int(self.centering_max_dur_adj_input, "Max exposure doublings")
         except FocaleError as exc:
             QMessageBox.warning(self, "Focale", str(exc))
             return
 
+        if not camera_address:
+            QMessageBox.warning(self, "Focale", "Camera Alpaca address is required.")
+            return
+        if not telescope_address:
+            QMessageBox.warning(self, "Focale", "Telescope Alpaca address is required.")
+            return
+
+        cache_dir = self._clean(self.solver_cache_dir_input)
+        scales = self.solver_scales_input.text().strip() or "6"
+        self.platesolver_output.clear()
+
         self._start_action(
-            "Plate solve",
-            lambda _log: services.platesolver_solve(
-                peaks_file=Path(peaks_path),
+            "Centering",
+            lambda log: services.center_on_coordinates(
+                camera_address=camera_address,
+                camera_number=camera_number,
+                telescope_address=telescope_address,
+                telescope_number=telescope_number,
+                target_ra_hours=target_ra,
+                target_dec_deg=target_dec,
                 cache_dir=cache_dir,
                 scales=scales,
-                positional_noise_pixels=positional_noise,
-                sip_order=sip_order,
-                tune_up_logodds_threshold=tune_logodds,
-                output_logodds_threshold=output_logodds,
-                minimum_quad_size_fraction=min_quad,
-                maximum_quads=max_quads,
-                ra_deg=ra_deg,
-                dec_deg=dec_deg,
-                radius_deg=radius_deg,
-                lower_arcsec_per_pixel=lower_arcsec,
-                upper_arcsec_per_pixel=upper_arcsec,
+                duration=duration,
+                max_iterations=max_iter,
+                min_peaks=min_peaks,
+                success_threshold=success_thr,
+                failure_threshold=failure_thr,
+                max_duration_adjustments=max_dur_adj,
+                echo=log,
             ),
-            on_result=lambda payload: self.platesolver_output.setPlainText(
+            on_result=lambda payload: self.platesolver_output.appendPlainText(
                 self._format_payload(payload)
             ),
         )
@@ -659,15 +672,6 @@ class FocaleWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Select cache directory")
         if path:
             self.solver_cache_dir_input.setText(path)
-
-    def _browse_peaks_file(self) -> None:
-        path, _selected = QFileDialog.getOpenFileName(
-            self,
-            "Select peaks JSON file",
-            filter="JSON files (*.json);;All files (*)",
-        )
-        if path:
-            self.peaks_file_input.setText(path)
 
     # ------------------------------------------------------------------ #
     # Input helpers                                                        #

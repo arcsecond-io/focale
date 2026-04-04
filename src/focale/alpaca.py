@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import socket
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+import numpy as np
 
 from .exceptions import FocaleError
 
@@ -298,3 +300,157 @@ def _get_device_value(
         )
 
     return payload.get("Value")
+
+
+# ------------------------------------------------------------------ #
+# Alpaca device control                                               #
+# ------------------------------------------------------------------ #
+
+def _put_device_value(
+    *,
+    address: str,
+    device_type: str,
+    device_number: int,
+    attribute: str,
+    data: dict[str, Any],
+    timeout_s: float = 10.0,
+) -> Any:
+    normalized_address = normalize_alpaca_address(address)
+    url = f"{normalized_address}/api/v1/{device_type}/{device_number}/{attribute}"
+    try:
+        response = httpx.put(url, data=data, timeout=timeout_s)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise FocaleError(
+            f"Unable to set Alpaca {device_type}#{device_number} {attribute}: {exc}"
+        ) from exc
+
+    if isinstance(payload, dict):
+        error_number = payload.get("ErrorNumber")
+        if error_number not in (None, 0):
+            error_message = payload.get("ErrorMessage") or f"error {error_number}"
+            raise FocaleError(
+                f"Alpaca {device_type}#{device_number} {attribute}: {error_message}"
+            )
+    return payload.get("Value") if isinstance(payload, dict) else None
+
+
+def telescope_set_tracking(address: str, device_number: int, enabled: bool) -> None:
+    _put_device_value(
+        address=address,
+        device_type="telescope",
+        device_number=device_number,
+        attribute="tracking",
+        data={"Tracking": str(enabled).lower()},
+    )
+
+
+def telescope_slew_async(address: str, device_number: int, ra_hours: float, dec_deg: float) -> None:
+    _put_device_value(
+        address=address,
+        device_type="telescope",
+        device_number=device_number,
+        attribute="slewtocoordinatesasync",
+        data={"RightAscension": str(ra_hours), "Declination": str(dec_deg)},
+        timeout_s=15.0,
+    )
+
+
+def telescope_wait_slew_done(
+    address: str,
+    device_number: int,
+    *,
+    timeout_s: float = 120.0,
+    poll_s: float = 0.5,
+) -> None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        slewing = _get_device_value(
+            address=address,
+            device_type="telescope",
+            device_number=device_number,
+            attribute="slewing",
+            timeout_s=5.0,
+        )
+        if not slewing:
+            return
+        time.sleep(poll_s)
+    raise FocaleError(f"Telescope slew did not complete within {timeout_s:.0f}s.")
+
+
+def telescope_sync_to_coordinates(
+    address: str, device_number: int, ra_hours: float, dec_deg: float
+) -> None:
+    _put_device_value(
+        address=address,
+        device_type="telescope",
+        device_number=device_number,
+        attribute="synctocoordinates",
+        data={"RightAscension": str(ra_hours), "Declination": str(dec_deg)},
+    )
+
+
+def camera_start_exposure(address: str, device_number: int, duration_s: float) -> None:
+    _put_device_value(
+        address=address,
+        device_type="camera",
+        device_number=device_number,
+        attribute="startexposure",
+        data={"Duration": str(duration_s), "Light": "true"},
+        timeout_s=15.0,
+    )
+
+
+def camera_wait_image_ready(
+    address: str,
+    device_number: int,
+    *,
+    timeout_s: float = 300.0,
+    poll_s: float = 1.0,
+) -> None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        ready = _get_device_value(
+            address=address,
+            device_type="camera",
+            device_number=device_number,
+            attribute="imageready",
+            timeout_s=5.0,
+        )
+        if ready:
+            return
+        time.sleep(poll_s)
+    raise FocaleError(f"Camera image did not become ready within {timeout_s:.0f}s.")
+
+
+def camera_get_image_array(address: str, device_number: int) -> np.ndarray:
+    """Fetch the latest camera image as a 2-D float32 numpy array (H × W)."""
+    normalized_address = normalize_alpaca_address(address)
+    url = f"{normalized_address}/api/v1/camera/{device_number}/imagearray"
+    try:
+        response = httpx.get(url, timeout=120.0)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise FocaleError(f"Unable to fetch camera image array: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise FocaleError("Unexpected camera imagearray response format.")
+    error_number = payload.get("ErrorNumber")
+    if error_number not in (None, 0):
+        raise FocaleError(
+            f"Camera imagearray error: {payload.get('ErrorMessage') or error_number}"
+        )
+
+    value = payload.get("Value")
+    if value is None:
+        raise FocaleError("Camera imagearray returned no Value.")
+
+    # Alpaca returns column-major data: Value[x][y] → shape (W, H); transpose to (H, W).
+    arr = np.array(value, dtype=np.float32)
+    if arr.ndim == 3:
+        arr = arr.mean(axis=0)   # average colour planes → (W, H)
+    if arr.ndim != 2:
+        raise FocaleError(f"Unexpected image array rank: {arr.ndim}")
+    return arr.T  # (H, W)
