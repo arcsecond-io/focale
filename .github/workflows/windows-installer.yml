@@ -2,8 +2,10 @@ name: Windows Installer
 
 on:
   push:
+    branches:
+      - master          # triggers staging build on every commit
     tags:
-      - "v*"
+      - "v*"            # triggers production (and staging) build on release tags
   workflow_dispatch:
     inputs:
       ref:
@@ -33,10 +35,26 @@ jobs:
           - dev
       fail-fast: false
 
-    # Skip environments not requested when triggered manually with a specific environment
+    # Routing rules per environment:
+    #   production  — tag pushes only  (v*)
+    #   staging     — every branch push to master, plus tag pushes
+    #   dev         — manual (workflow_dispatch) only
+    # workflow_dispatch respects the optional `environment` input filter.
     if: >
-      inputs.environment == '' ||
-      inputs.environment == matrix.environment
+      (
+        github.event_name == 'workflow_dispatch' &&
+        (inputs.environment == '' || inputs.environment == matrix.environment)
+      ) ||
+      (
+        github.event_name == 'push' &&
+        startsWith(github.ref, 'refs/tags/') &&
+        (matrix.environment == 'production' || matrix.environment == 'staging')
+      ) ||
+      (
+        github.event_name == 'push' &&
+        !startsWith(github.ref, 'refs/tags/') &&
+        matrix.environment == 'staging'
+      )
 
     steps:
       - uses: actions/checkout@v4
@@ -52,12 +70,28 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ inputs.version }}"
+
           if ([string]::IsNullOrWhiteSpace($version)) {
-            $version = "${{ github.ref_name }}"
+            $ref = "${{ github.ref }}"
+            if ($ref.StartsWith("refs/tags/")) {
+              # Tag push — strip refs/tags/ and leading v
+              $version = "${{ github.ref_name }}"
+              if ($version.StartsWith("v")) { $version = $version.Substring(1) }
+            } else {
+              # Branch push — derive base version from pyproject.toml + short SHA
+              $toml = Get-Content pyproject.toml -Raw
+              if ($toml -match 'version\s*=\s*"([^"]+)"') {
+                $base = $Matches[1]
+              } else {
+                $base = "0.0.0"
+              }
+              $sha = "${{ github.sha }}".Substring(0, 7)
+              $version = "$base-staging.$sha"
+            }
           }
-          if ($version.StartsWith("refs/tags/")) { $version = $version.Substring(10) }
-          if ($version.StartsWith("v")) { $version = $version.Substring(1) }
-          if ([string]::IsNullOrWhiteSpace($version)) { $version = "0.2.0-dev" }
+
+          if ([string]::IsNullOrWhiteSpace($version)) { $version = "0.0.0-dev" }
+          Write-Host "Resolved version: $version"
           "value=$version" >> $env:GITHUB_OUTPUT
 
       - name: Resolve environment metadata
@@ -85,10 +119,10 @@ jobs:
               $app_id        = "9E7C4B20-3A5F-4D8C-C2F9-3E70B4D6F820"
             }
           }
-          "app_name=$app_name"    >> $env:GITHUB_OUTPUT
-          "exe_name=$exe_name"    >> $env:GITHUB_OUTPUT
+          "app_name=$app_name"       >> $env:GITHUB_OUTPUT
+          "exe_name=$exe_name"       >> $env:GITHUB_OUTPUT
           "install_dir=$install_dir" >> $env:GITHUB_OUTPUT
-          "app_id=$app_id"        >> $env:GITHUB_OUTPUT
+          "app_id=$app_id"           >> $env:GITHUB_OUTPUT
 
       - name: Bake environment into source
         shell: pwsh
@@ -192,7 +226,7 @@ jobs:
             "/DMyOutputDir=$outputDir" `
             packaging/windows/focale.iss
 
-      - name: Upload installer
+      - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: focale-${{ matrix.environment }}-windows-installer-${{ steps.version.outputs.value }}
