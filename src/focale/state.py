@@ -55,6 +55,18 @@ class AlpacaServerRecord:
 
 
 @dataclass
+class CenteringConfig:
+    """Persisted parameters for the Hub-triggered centering procedure."""
+    duration: float = 5.0
+    max_iterations: int = 10
+    min_peaks: int = 20
+    success_threshold: float = 10.0
+    failure_threshold: float = 300.0
+    max_duration_adjustments: int = 2
+    cache_dir: str | None = None
+
+
+@dataclass
 class FocaleState:
     workspace_id: str
     environment: str | None = None
@@ -64,6 +76,7 @@ class FocaleState:
     auth: AuthSession | None = None
     installations: dict[str, InstallationRecord] = field(default_factory=dict)
     alpaca_servers: dict[str, AlpacaServerRecord] = field(default_factory=dict)
+    centering: CenteringConfig = field(default_factory=CenteringConfig)
 
     @classmethod
     def config_dir(cls) -> Path:
@@ -125,6 +138,15 @@ class FocaleState:
                 auth = AuthSession(**auth_payload)
             except TypeError as exc:
                 raise FocaleStateError(f"Invalid auth record in {path}: {exc}") from exc
+
+        centering = CenteringConfig()
+        centering_payload = data.get("centering")
+        if centering_payload and isinstance(centering_payload, dict):
+            try:
+                centering = CenteringConfig(**centering_payload)
+            except TypeError:
+                pass
+
         return cls(
             workspace_id=workspace_id,
             environment=data.get("environment"),
@@ -134,6 +156,7 @@ class FocaleState:
             auth=auth,
             installations=installs,
             alpaca_servers=alpaca_servers,
+            centering=centering,
         )
 
     def save(self) -> None:
@@ -153,6 +176,7 @@ class FocaleState:
             "alpaca_servers": {
                 key: asdict(record) for key, record in self.alpaca_servers.items()
             },
+            "centering": asdict(self.centering),
         }
         path = self.state_file()
         path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")

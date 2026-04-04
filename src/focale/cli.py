@@ -10,6 +10,7 @@ from typing import Any
 import click
 
 from . import __version__
+from . import services as _services
 from .agent_auth import AgentKeypair
 from .alpaca import discover_alpaca_servers, normalize_alpaca_address
 from .arcsecond_client import ArcsecondGateway
@@ -497,6 +498,7 @@ def connect(
                 agent_uuid=record.agent_uuid,
                 jwt=minted.jwt,
                 keypair=keypair,
+                command_handlers=_services.default_command_handlers(),
             ).connect(once=once, echo=click.echo)
         )
     except FocaleError as exc:

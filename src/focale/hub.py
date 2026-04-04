@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
 from dataclasses import dataclass
+from typing import Any, Callable
 
 import websockets
 from websockets.client import WebSocketClientProtocol
 
 from .agent_auth import AgentKeypair
 from .exceptions import HubProtocolError
+
+CommandHandler = Callable[[dict[str, Any], Callable[[str], None]], Any]
 
 
 def frame(message_type: str, payload: dict | None = None) -> dict:
@@ -38,12 +42,14 @@ class HubClient:
         agent_uuid: str,
         jwt: str,
         keypair: AgentKeypair,
+        command_handlers: dict[str, CommandHandler] | None = None,
     ) -> None:
         self.hub_url = hub_url
         self.workspace_id = workspace_id
         self.agent_uuid = agent_uuid
         self.jwt = jwt
         self.keypair = keypair
+        self._command_handlers = command_handlers or {}
 
     async def connect(self, *, once: bool = False, echo=print) -> HubWelcome:
         try:
@@ -113,12 +119,84 @@ class HubClient:
                         continue
                     if message_type == "error":
                         self._raise_for_error(message, "Hub returned an error frame.")
+                    if message_type == "command":
+                        asyncio.ensure_future(
+                            self._dispatch_command(websocket, message, echo)
+                        )
+                        continue
 
                     echo(json.dumps(message, indent=2, sort_keys=True))
 
                 return welcome
         except (OSError, websockets.InvalidHandshake, websockets.InvalidURI) as exc:
             raise HubProtocolError(f"Unable to connect to Hub at {self.hub_url}: {exc}") from exc
+
+    async def _dispatch_command(
+        self,
+        websocket: WebSocketClientProtocol,
+        message: dict,
+        echo,
+    ) -> None:
+        """
+        Run a Hub command frame in a thread-pool executor and stream progress
+        back to the Hub as 'progress' frames, then send a final 'command_result'.
+        """
+        payload = message.get("payload") or {}
+        command_name = str(payload.get("command") or payload.get("name") or "")
+        correlation_id = message.get("id") or uuid.uuid4().hex
+
+        handler = self._command_handlers.get(command_name)
+        if handler is None:
+            echo(f"[hub] Received unknown command: {command_name!r}")
+            await self._send(websocket, "command_result", {
+                "correlation_id": correlation_id,
+                "ok": False,
+                "error": f"Unknown command: {command_name!r}",
+            })
+            return
+
+        loop = asyncio.get_event_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def sync_echo(msg: str) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, msg)
+
+        async def forward_progress() -> None:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                echo(item)
+                try:
+                    await self._send(websocket, "progress", {
+                        "correlation_id": correlation_id,
+                        "message": item,
+                    })
+                except Exception:
+                    pass
+
+        fut = loop.run_in_executor(None, lambda: handler(payload, sync_echo))
+        forward_task = asyncio.ensure_future(forward_progress())
+
+        try:
+            result = await fut
+        except Exception as exc:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+            await forward_task
+            await self._send(websocket, "command_result", {
+                "correlation_id": correlation_id,
+                "ok": False,
+                "error": str(exc),
+            })
+            return
+
+        loop.call_soon_threadsafe(queue.put_nowait, None)
+        await forward_task
+        await self._send(websocket, "command_result", {
+            "correlation_id": correlation_id,
+            "ok": True,
+            "result": result if result is not None else {},
+        })
 
     async def _send(
         self,

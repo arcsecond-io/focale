@@ -229,106 +229,85 @@ class FocaleWindow(QMainWindow):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(12)
 
-        top_row = QHBoxLayout()
-        top_row.setSpacing(12)
+        # Load persisted config
+        centering_config = services.get_centering_config()
 
-        # --- Equipment + Target (left) ---
-        equip_box = QGroupBox("Equipment & Target")
-        equip_form = QFormLayout(equip_box)
-        equip_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        equip_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
-        cam_row = QHBoxLayout()
-        self.camera_address_input = QLineEdit()
-        self.camera_address_input.setPlaceholderText("http://localhost:11111")
-        self.camera_number_input = QLineEdit("0")
-        self.camera_number_input.setFixedWidth(36)
-        cam_row.addWidget(self.camera_address_input, 1)
-        cam_row.addWidget(QLabel("#"))
-        cam_row.addWidget(self.camera_number_input)
-        equip_form.addRow("Camera", self._wrap_layout(cam_row))
-
-        tel_row = QHBoxLayout()
-        self.telescope_address_input = QLineEdit()
-        self.telescope_address_input.setPlaceholderText("http://localhost:11111")
-        self.telescope_number_input = QLineEdit("0")
-        self.telescope_number_input.setFixedWidth(36)
-        tel_row.addWidget(self.telescope_address_input, 1)
-        tel_row.addWidget(QLabel("#"))
-        tel_row.addWidget(self.telescope_number_input)
-        equip_form.addRow("Telescope", self._wrap_layout(tel_row))
-
-        equip_form.addRow(QLabel(""))  # spacer
-
-        self.target_ra_input = QLineEdit()
-        self.target_ra_input.setPlaceholderText("decimal hours")
-        equip_form.addRow("Target RA (h)", self.target_ra_input)
-
-        self.target_dec_input = QLineEdit()
-        self.target_dec_input.setPlaceholderText("degrees")
-        equip_form.addRow("Target Dec (°)", self.target_dec_input)
-
-        top_row.addWidget(equip_box, 1)
-
-        # --- Centering parameters (right) ---
+        # --- Centering parameters ---
         centering_box = QGroupBox("Centering Parameters")
         centering_form = QFormLayout(centering_box)
         centering_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         centering_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-        self.centering_duration_input = QLineEdit("5")
+        centering_note = QLabel(
+            "These parameters are used when the Hub triggers a centering procedure. "
+            "Camera, telescope, and target coordinates are resolved automatically "
+            "from your registered Alpaca equipment."
+        )
+        centering_note.setWordWrap(True)
+        centering_form.addRow("", centering_note)
+
+        self.centering_duration_input = QLineEdit(
+            str(centering_config.get("duration", 5.0))
+        )
         centering_form.addRow("Exposure (s)", self.centering_duration_input)
 
-        self.centering_max_iter_input = QLineEdit("10")
+        self.centering_max_iter_input = QLineEdit(
+            str(centering_config.get("max_iterations", 10))
+        )
         centering_form.addRow("Max iterations", self.centering_max_iter_input)
 
-        self.centering_min_peaks_input = QLineEdit("20")
+        self.centering_min_peaks_input = QLineEdit(
+            str(centering_config.get("min_peaks", 20))
+        )
         centering_form.addRow("Min peaks", self.centering_min_peaks_input)
 
-        self.centering_success_input = QLineEdit("10")
-        centering_form.addRow("Success threshold (\")", self.centering_success_input)
+        self.centering_success_input = QLineEdit(
+            str(centering_config.get("success_threshold", 10.0))
+        )
+        centering_form.addRow('Success threshold (")', self.centering_success_input)
 
-        self.centering_failure_input = QLineEdit("300")
-        centering_form.addRow("Failure threshold (\")", self.centering_failure_input)
+        self.centering_failure_input = QLineEdit(
+            str(centering_config.get("failure_threshold", 300.0))
+        )
+        centering_form.addRow('Failure threshold (")', self.centering_failure_input)
 
-        self.centering_max_dur_adj_input = QLineEdit("2")
+        self.centering_max_dur_adj_input = QLineEdit(
+            str(centering_config.get("max_duration_adjustments", 2))
+        )
         centering_form.addRow("Max exposure doublings", self.centering_max_dur_adj_input)
+        layout.addWidget(centering_box)
 
-        top_row.addWidget(centering_box, 1)
-        layout.addLayout(top_row)
-
-        # --- Local solver index files (full width) ---
+        # --- Local solver index files ---
         solver_box = QGroupBox("Local Solver Index Files")
         solver_form = QFormLayout(solver_box)
         solver_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         solver_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-        self.solver_cache_dir_input = QLineEdit()
+        self.solver_cache_dir_input = QLineEdit(
+            str(centering_config.get("cache_dir") or "")
+        )
         cache_row = QHBoxLayout()
         cache_row.addWidget(self.solver_cache_dir_input, 1)
         browse_cache_button = QPushButton("Browse")
         browse_cache_button.clicked.connect(self._browse_cache_dir)
         cache_row.addWidget(browse_cache_button)
         solver_form.addRow("Cache directory", self._wrap_layout(cache_row))
-
-        self.solver_scales_input = QLineEdit("6")
-        solver_form.addRow("Scales (0–19)", self.solver_scales_input)
         layout.addWidget(solver_box)
 
         # --- Buttons ---
         button_row = QHBoxLayout()
         check_solver_button = QPushButton("Check Solver")
         check_solver_button.clicked.connect(self._platesolver_status)
-        center_button = QPushButton("Center")
-        center_button.clicked.connect(self._center_on_coordinates)
+        save_settings_button = QPushButton("Save Settings")
+        save_settings_button.clicked.connect(self._save_centering_settings)
         button_row.addWidget(check_solver_button)
-        button_row.addWidget(center_button)
+        button_row.addWidget(save_settings_button)
         button_row.addStretch(1)
         layout.addLayout(button_row)
 
         self.platesolver_output = QPlainTextEdit()
         self.platesolver_output.setReadOnly(True)
-        self.platesolver_output.setPlaceholderText("Centering progress and results will appear here.")
+        self.platesolver_output.setPlaceholderText("Solver status will appear here.")
         layout.addWidget(self.platesolver_output, 1)
 
         return tab
@@ -603,26 +582,19 @@ class FocaleWindow(QMainWindow):
 
     def _platesolver_status(self) -> None:
         cache_dir = self._clean(self.solver_cache_dir_input)
-        scales = self.solver_scales_input.text().strip() or "6"
         self._start_action(
             "Check solver",
             lambda _log: services.platesolver_status(
                 cache_dir=cache_dir,
-                scales=scales,
+                scales="6",
             ),
             on_result=lambda payload: self.platesolver_output.setPlainText(
                 self._format_payload(payload)
             ),
         )
 
-    def _center_on_coordinates(self) -> None:
+    def _save_centering_settings(self) -> None:
         try:
-            camera_address = self.camera_address_input.text().strip()
-            camera_number = self._required_int(self.camera_number_input, "Camera device number")
-            telescope_address = self.telescope_address_input.text().strip()
-            telescope_number = self._required_int(self.telescope_number_input, "Telescope device number")
-            target_ra = self._required_float(self.target_ra_input, "Target RA")
-            target_dec = self._required_float(self.target_dec_input, "Target Dec")
             duration = self._required_float(self.centering_duration_input, "Exposure")
             max_iter = self._required_int(self.centering_max_iter_input, "Max iterations")
             min_peaks = self._required_int(self.centering_min_peaks_input, "Min peaks")
@@ -633,38 +605,20 @@ class FocaleWindow(QMainWindow):
             QMessageBox.warning(self, "Focale", str(exc))
             return
 
-        if not camera_address:
-            QMessageBox.warning(self, "Focale", "Camera Alpaca address is required.")
-            return
-        if not telescope_address:
-            QMessageBox.warning(self, "Focale", "Telescope Alpaca address is required.")
-            return
-
         cache_dir = self._clean(self.solver_cache_dir_input)
-        scales = self.solver_scales_input.text().strip() or "6"
-        self.platesolver_output.clear()
-
         self._start_action(
-            "Centering",
-            lambda log: services.center_on_coordinates(
-                camera_address=camera_address,
-                camera_number=camera_number,
-                telescope_address=telescope_address,
-                telescope_number=telescope_number,
-                target_ra_hours=target_ra,
-                target_dec_deg=target_dec,
-                cache_dir=cache_dir,
-                scales=scales,
+            "Save centering settings",
+            lambda _log: services.save_centering_config(
                 duration=duration,
                 max_iterations=max_iter,
                 min_peaks=min_peaks,
                 success_threshold=success_thr,
                 failure_threshold=failure_thr,
                 max_duration_adjustments=max_dur_adj,
-                echo=log,
+                cache_dir=cache_dir,
             ),
-            on_result=lambda payload: self.platesolver_output.appendPlainText(
-                self._format_payload(payload)
+            on_result=lambda _: self.platesolver_output.setPlainText(
+                "Centering settings saved."
             ),
         )
 
@@ -680,15 +634,6 @@ class FocaleWindow(QMainWindow):
     def _clean(self, line_edit: QLineEdit) -> str | None:
         value = line_edit.text().strip()
         return value or None
-
-    def _optional_float(self, line_edit: QLineEdit) -> float | None:
-        value = line_edit.text().strip()
-        if not value:
-            return None
-        try:
-            return float(value)
-        except ValueError as exc:
-            raise FocaleError(f"Invalid number: '{value}'.") from exc
 
     def _required_float(self, line_edit: QLineEdit, label: str) -> float:
         value = line_edit.text().strip()

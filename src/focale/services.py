@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
+from dataclasses import asdict
+
 from . import __version__
 from ._environment import ENVIRONMENT as BAKED_ENVIRONMENT
 from .agent_auth import AgentKeypair
@@ -24,7 +26,7 @@ from .exceptions import ArcsecondGatewayError, FocaleError
 from .hub import HubClient
 from .centering import CenteringLoop
 from .platesolver import PlateSolverClient
-from .state import AlpacaServerRecord, FocaleState, InstallationRecord
+from .state import AlpacaServerRecord, CenteringConfig, FocaleState, InstallationRecord
 
 Logger = Callable[[str], None]
 
@@ -1381,3 +1383,136 @@ def center_on_coordinates(
         max_duration_adjustments=max_duration_adjustments,
     )
     return loop.run(echo).to_dict()
+
+
+# ------------------------------------------------------------------ #
+# Centering config persistence                                         #
+# ------------------------------------------------------------------ #
+
+def get_centering_config() -> dict[str, Any]:
+    """Return the persisted centering configuration as a plain dict."""
+    state = FocaleState.load()
+    return asdict(state.centering)
+
+
+def save_centering_config(
+    *,
+    duration: float,
+    max_iterations: int,
+    min_peaks: int,
+    success_threshold: float,
+    failure_threshold: float,
+    max_duration_adjustments: int,
+    cache_dir: str | None,
+) -> dict[str, Any]:
+    """Persist centering parameters to state and return the saved values."""
+    state = FocaleState.load()
+    state.centering = CenteringConfig(
+        duration=duration,
+        max_iterations=max_iterations,
+        min_peaks=min_peaks,
+        success_threshold=success_threshold,
+        failure_threshold=failure_threshold,
+        max_duration_adjustments=max_duration_adjustments,
+        cache_dir=cache_dir,
+    )
+    state.save()
+    return asdict(state.centering)
+
+
+# ------------------------------------------------------------------ #
+# Hub command handlers                                                 #
+# ------------------------------------------------------------------ #
+
+def _find_alpaca_device(
+    state: FocaleState,
+    device_type: str,
+) -> tuple[str, int] | None:
+    """
+    Return (address, device_number) for the first registered Alpaca server
+    that exposes a device of the requested type.
+    """
+    for _key, server_record in state.alpaca_servers.items():
+        try:
+            devices = get_configured_devices(server_record.address)
+        except FocaleError:
+            continue
+        for device in devices:
+            if device.type.lower() == device_type.lower():
+                return server_record.address, device.number
+    return None
+
+
+def handle_center_on_coordinates(
+    payload: dict[str, Any],
+    echo: Logger,
+) -> dict[str, Any]:
+    """
+    Hub command handler for ``center_on_coordinates``.
+
+    The Hub payload must provide ``target_ra_hours`` (or ``ra_hours``) and
+    ``target_dec_deg`` (or ``dec_deg``).  Camera / telescope are resolved from
+    the locally registered Alpaca servers.  All other parameters default to the
+    persisted centering configuration.
+    """
+    state = FocaleState.load()
+    config = state.centering
+
+    camera = _find_alpaca_device(state, "Camera")
+    if camera is None:
+        raise FocaleError(
+            "No Camera device found in registered Alpaca servers. "
+            "Please register your Alpaca server first."
+        )
+    telescope = _find_alpaca_device(state, "Telescope")
+    if telescope is None:
+        raise FocaleError(
+            "No Telescope device found in registered Alpaca servers. "
+            "Please register your Alpaca server first."
+        )
+
+    camera_address, camera_number = camera
+    telescope_address, telescope_number = telescope
+
+    try:
+        target_ra_hours = float(
+            payload.get("target_ra_hours") or payload.get("ra_hours") or 0.0
+        )
+        target_dec_deg = float(
+            payload.get("target_dec_deg") or payload.get("dec_deg") or 0.0
+        )
+    except (TypeError, ValueError) as exc:
+        raise FocaleError(f"Invalid RA/Dec in command payload: {exc}") from exc
+
+    scales_str = str(payload.get("scales") or "6")
+
+    echo(
+        f"Centering on RA={target_ra_hours:.4f}h Dec={target_dec_deg:.4f}° "
+        f"using {camera_address} (cam #{camera_number}) "
+        f"and {telescope_address} (tel #{telescope_number})."
+    )
+
+    return center_on_coordinates(
+        camera_address=camera_address,
+        camera_number=camera_number,
+        telescope_address=telescope_address,
+        telescope_number=telescope_number,
+        target_ra_hours=target_ra_hours,
+        target_dec_deg=target_dec_deg,
+        cache_dir=config.cache_dir,
+        scales=scales_str,
+        duration=config.duration,
+        max_iterations=config.max_iterations,
+        min_peaks=config.min_peaks,
+        success_threshold=config.success_threshold,
+        failure_threshold=config.failure_threshold,
+        max_duration_adjustments=config.max_duration_adjustments,
+        echo=echo,
+    )
+
+
+def default_command_handlers() -> dict[str, Any]:
+    """Return the default mapping of Hub command names to local handler functions."""
+    return {
+        "center_on_coordinates": handle_center_on_coordinates,
+    }
