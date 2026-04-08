@@ -12,7 +12,7 @@
 #endif
 #define MyAppPublisher "Arcsecond"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.3.2"
+  #error "MyAppVersion must be provided by the build process."
 #endif
 #ifndef MySourceDir
   #define MySourceDir "dist\focale"

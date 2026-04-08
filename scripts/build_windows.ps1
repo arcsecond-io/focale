@@ -1,10 +1,18 @@
 param(
-    [string]$Version = "0.3.2",
+    [string]$Version = "",
     [ValidateSet("production", "staging", "dev")]
     [string]$Environment = "production"
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $Version) {
+    $VersionMatch = Select-String -Path "pyproject.toml" -Pattern '^version = "([^"]+)"$' | Select-Object -First 1
+    if (-not $VersionMatch) {
+        throw "Could not determine version from pyproject.toml"
+    }
+    $Version = $VersionMatch.Matches[0].Groups[1].Value
+}
 
 # Resolve environment-specific metadata
 switch ($Environment) {
