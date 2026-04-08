@@ -17,23 +17,28 @@ if (-not $Version) {
 # Resolve environment-specific metadata
 switch ($Environment) {
     "production" {
-        $AppName    = "Focale"
-        $ExeName    = "focale"
-        $InstallDir = "{autopf}\Arcsecond\Focale"
+        $AppName    = "Focale Relay"
+        $ExeName    = "focale-relay"
+        $InstallDir = "{autopf}\Arcsecond\Focale Relay"
         $AppId      = "11A3125E-D7EA-487D-9998-67E95343F4A5"
     }
     "staging" {
-        $AppName    = "Focale Staging"
-        $ExeName    = "focale-staging"
-        $InstallDir = "{autopf}\Arcsecond\Focale Staging"
+        $AppName    = "Focale Relay Staging"
+        $ExeName    = "focale-relay-staging"
+        $InstallDir = "{autopf}\Arcsecond\Focale Relay Staging"
         $AppId      = "5B3A2E10-7C4D-4F9A-B1E8-2D6F0A3C5E71"
     }
     "dev" {
-        $AppName    = "Focale Dev"
-        $ExeName    = "focale-dev"
-        $InstallDir = "{autopf}\Arcsecond\Focale Dev"
+        $AppName    = "Focale Relay Dev"
+        $ExeName    = "focale-relay-dev"
+        $InstallDir = "{autopf}\Arcsecond\Focale Relay Dev"
         $AppId      = "9E7C4B20-3A5F-4D8C-C2F9-3E70B4D6F820"
     }
+}
+
+$IconPath = ""
+if (Test-Path "src/focale/assets/app-icon.ico") {
+    $IconPath = (Resolve-Path "src/focale/assets/app-icon.ico").Path
 }
 
 # Bake the environment into the source
@@ -46,21 +51,32 @@ ENVIRONMENT = "$Environment"
 python -m pip install --upgrade pip
 python -m pip install .[dev]
 
-pyinstaller `
-  --noconfirm `
-  --clean `
-  --onedir `
-  --windowed `
-  --name $ExeName `
-  --paths src `
-  --collect-submodules arcsecond `
-  --collect-submodules focale `
-  src/focale/gui_main.py
+$PyInstallerArgs = @(
+    "--noconfirm",
+    "--clean",
+    "--onedir",
+    "--windowed",
+    "--name", $ExeName,
+    "--paths", "src",
+    "--collect-data", "focale",
+    "--collect-submodules", "arcsecond",
+    "--collect-submodules", "focale"
+)
+if ($IconPath) {
+    $PyInstallerArgs += @("--icon", $IconPath)
+}
+$PyInstallerArgs += "src/focale/gui_main.py"
+pyinstaller @PyInstallerArgs
 
-iscc `
-  /DMyAppVersion=$Version `
-  "/DMyAppName=$AppName" `
-  "/DMyAppId=$AppId" `
-  "/DMyExeName=$ExeName.exe" `
-  "/DMyDefaultDirName=$InstallDir" `
-  packaging/windows/focale.iss
+$IsccArgs = @(
+    "/DMyAppVersion=$Version",
+    "/DMyAppName=$AppName",
+    "/DMyAppId=$AppId",
+    "/DMyExeName=$ExeName.exe",
+    "/DMyDefaultDirName=$InstallDir"
+)
+if ($IconPath) {
+    $IsccArgs += "/DMySetupIconFile=$IconPath"
+}
+$IsccArgs += "packaging/windows/focale.iss"
+iscc @IsccArgs

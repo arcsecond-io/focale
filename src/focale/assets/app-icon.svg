@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="100%" height="100%" viewBox="0 0 512 512" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linecap:round;">
+    <path d="M512,92L512,420C512,470.776 470.776,512 420,512L92,512C41.224,512 0,470.776 0,420L0,92C0,41.224 41.224,0 92,0L420,0C470.776,0 512,41.224 512,92Z" style="fill:rgb(1,16,64);"/>
+    <path d="M235,19L277,19L256,215L235,19Z" style="fill:rgb(170,255,0);fill-opacity:0.5;fill-rule:nonzero;"/>
+    <path d="M182,23L205,23L248,215L182,23Z" style="fill:rgb(170,255,0);fill-opacity:0.25;fill-rule:nonzero;"/>
+    <path d="M307,23L330,23L264,215L307,23Z" style="fill:rgb(170,255,0);fill-opacity:0.25;fill-rule:nonzero;"/>
+    <path d="M235,493L277,493L256,297L235,493Z" style="fill:rgb(170,255,0);fill-opacity:0.5;fill-rule:nonzero;"/>
+    <path d="M182,489L205,489L248,297L182,489Z" style="fill:rgb(170,255,0);fill-opacity:0.25;fill-rule:nonzero;"/>
+    <path d="M307,489L330,489L264,297L307,489Z" style="fill:rgb(170,255,0);fill-opacity:0.25;fill-rule:nonzero;"/>
+    <path d="M19,235L19,277L215,256L19,235Z" style="fill:rgb(170,255,0);fill-opacity:0.5;fill-rule:nonzero;"/>
+    <path d="M23,182L23,205L215,248L23,182Z" style="fill:rgb(170,255,0);fill-opacity:0.25;fill-rule:nonzero;"/>
+    <path d="M23,307L23,330L215,264L23,307Z" style="fill:rgb(170,255,0);fill-opacity:0.25;fill-rule:nonzero;"/>
+    <path d="M493,235L493,277L297,256L493,235Z" style="fill:rgb(170,255,0);fill-opacity:0.5;fill-rule:nonzero;"/>
+    <path d="M489,182L489,205L297,248L489,182Z" style="fill:rgb(170,255,0);fill-opacity:0.25;fill-rule:nonzero;"/>
+    <path d="M489,307L489,330L297,264L489,307Z" style="fill:rgb(170,255,0);fill-opacity:0.25;fill-rule:nonzero;"/>
+    <path d="M15,31L45,15L229,229L15,31Z" style="fill:rgb(170,255,0);fill-opacity:0.42;fill-rule:nonzero;"/>
+    <path d="M15,72L32,15L229,232L15,72Z" style="fill:rgb(170,255,0);fill-opacity:0.18;fill-rule:nonzero;"/>
+    <path d="M72,15L15,32L232,229L72,15Z" style="fill:rgb(170,255,0);fill-opacity:0.18;fill-rule:nonzero;"/>
+    <path d="M467,15L497,31L283,229L467,15Z" style="fill:rgb(170,255,0);fill-opacity:0.42;fill-rule:nonzero;"/>
+    <path d="M480,15L497,72L283,232L480,15Z" style="fill:rgb(170,255,0);fill-opacity:0.18;fill-rule:nonzero;"/>
+    <path d="M440,15L497,32L280,229L440,15Z" style="fill:rgb(170,255,0);fill-opacity:0.18;fill-rule:nonzero;"/>
+    <path d="M15,481L45,497L229,283L15,481Z" style="fill:rgb(170,255,0);fill-opacity:0.42;fill-rule:nonzero;"/>
+    <path d="M15,440L32,497L229,280L15,440Z" style="fill:rgb(170,255,0);fill-opacity:0.18;fill-rule:nonzero;"/>
+    <path d="M72,497L15,480L232,283L72,497Z" style="fill:rgb(170,255,0);fill-opacity:0.18;fill-rule:nonzero;"/>
+    <path d="M467,497L497,481L283,283L467,497Z" style="fill:rgb(170,255,0);fill-opacity:0.42;fill-rule:nonzero;"/>
+    <path d="M480,497L497,440L283,280L480,497Z" style="fill:rgb(170,255,0);fill-opacity:0.18;fill-rule:nonzero;"/>
+    <path d="M440,497L497,480L280,283L440,497Z" style="fill:rgb(170,255,0);fill-opacity:0.18;fill-rule:nonzero;"/>
+    <path d="M147,70C164.333,194 164.333,318 147,442" style="fill:none;fill-rule:nonzero;stroke:white;stroke-width:26px;"/>
+    <path d="M147,70C219.667,92 292.333,92 365,70" style="fill:none;fill-rule:nonzero;stroke:white;stroke-width:26px;"/>
+    <g transform="matrix(1,0,0,1,3.62,12.66)">
+        <path d="M256,213L253.57,205.83C253.19,204.69 251.58,204.69 251.19,205.83L248.76,213C244.54,225.54 234.58,235.5 222.04,239.72L214.87,242.15C213.73,242.53 213.73,244.14 214.87,244.53L222.04,246.96C234.58,251.18 244.54,261.14 248.76,273.68L251.19,280.85C251.57,281.99 253.18,281.99 253.57,280.85L256,273.68C260.22,261.14 270.18,251.18 282.72,246.96L289.89,244.53C291.03,244.15 291.03,242.54 289.89,242.15L282.72,239.72C270.18,235.5 260.22,225.54 256,213Z" style="fill:rgb(255,232,0);fill-rule:nonzero;"/>
+    </g>
+</svg>

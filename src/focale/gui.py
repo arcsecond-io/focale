@@ -6,6 +6,7 @@ import traceback
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal, Slot
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
+from . import branding
 from . import services
 from ._environment import ENVIRONMENT as BAKED_ENVIRONMENT
 from .exceptions import ArcsecondGatewayError, FocaleError
@@ -74,10 +76,10 @@ class FocaleWindow(QMainWindow):
         ] = {}
         self._settings = services.user_settings()
 
-        env_suffix = f" — {services.environment_label(BAKED_ENVIRONMENT)}" if BAKED_ENVIRONMENT != "production" else ""
-        self.setWindowTitle(f"Focale {__version__}{env_suffix}")
+        self.setWindowTitle(branding.window_title(__version__, BAKED_ENVIRONMENT))
         self.resize(980, 760)
         self.setStatusBar(QStatusBar(self))
+        self._apply_window_icon()
 
         root = QWidget(self)
         self.setCentralWidget(root)
@@ -85,13 +87,20 @@ class FocaleWindow(QMainWindow):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        heading = QLabel("Focale")
-        heading.setStyleSheet("font-size: 24px; font-weight: 600;")
-        layout.addWidget(heading)
+        heading_row = QHBoxLayout()
+        heading_row.setSpacing(10)
 
-        subheading = QLabel(
-            "Desktop controls for Focale session setup, Hub diagnostics, and local plate solving."
-        )
+        icon_label = self._build_heading_icon_label()
+        if icon_label is not None:
+            heading_row.addWidget(icon_label, 0, Qt.AlignVCenter)
+
+        heading = QLabel(branding.display_name(BAKED_ENVIRONMENT))
+        heading.setStyleSheet("font-size: 24px; font-weight: 600;")
+        heading_row.addWidget(heading, 0, Qt.AlignVCenter)
+        heading_row.addStretch(1)
+        layout.addLayout(heading_row)
+
+        subheading = QLabel(branding.APP_DESCRIPTION)
         subheading.setWordWrap(True)
         layout.addWidget(subheading)
 
@@ -121,7 +130,7 @@ class FocaleWindow(QMainWindow):
         layout.setColumnStretch(1, 2)
 
         # --- Focale Account ---
-        account_box = QGroupBox("Focale Account")
+        account_box = QGroupBox(branding.ACCOUNT_GROUP_TITLE)
         account_form = QFormLayout(account_box)
         account_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         account_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -133,7 +142,10 @@ class FocaleWindow(QMainWindow):
         self.secret_input.setEchoMode(QLineEdit.Password)
         self.secret_input.setPlaceholderText("Only needed when signing in again")
         self.environment_label = QLabel(
-            str(self._settings.get("environment_label") or "Focale Cloud")
+            str(
+                self._settings.get("environment_label")
+                or branding.default_environment_label(BAKED_ENVIRONMENT)
+            )
         )
         account_form.addRow("Username", self.username_input)
         account_form.addRow("Password", self.secret_input)
@@ -150,7 +162,7 @@ class FocaleWindow(QMainWindow):
         account_form.addRow("", account_buttons)
 
         account_note = QLabel(
-            "Focale keeps your session locally, so you usually only need to sign in once."
+            f"{branding.APP_NAME} keeps your session locally, so you usually only need to sign in once."
         )
         account_note.setWordWrap(True)
         account_form.addRow("", account_note)
@@ -162,7 +174,7 @@ class FocaleWindow(QMainWindow):
         hub_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         hub_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
         hub_note = QLabel(
-            "The Hub connection follows your Focale environment automatically."
+            f"The Hub connection follows your {branding.APP_NAME} environment automatically."
         )
         hub_note.setWordWrap(True)
         hub_form.addRow("", hub_note)
@@ -213,7 +225,7 @@ class FocaleWindow(QMainWindow):
         alpaca_buttons = QHBoxLayout()
         discover_alpaca_button = QPushButton("Check Local Alpaca Servers")
         discover_alpaca_button.clicked.connect(self._discover_local_alpaca)
-        register_alpaca_button = QPushButton("Register Server To Focale")
+        register_alpaca_button = QPushButton(f"Register Server To {branding.APP_NAME}")
         register_alpaca_button.clicked.connect(self._register_local_alpaca)
         alpaca_buttons.addWidget(discover_alpaca_button)
         alpaca_buttons.addWidget(register_alpaca_button)
@@ -310,6 +322,36 @@ class FocaleWindow(QMainWindow):
     # Helpers                                                              #
     # ------------------------------------------------------------------ #
 
+    def _apply_window_icon(self) -> None:
+        icon_path = branding.find_window_icon_path()
+        if icon_path is None:
+            return
+
+        icon = QIcon(str(icon_path))
+        if icon.isNull():
+            return
+
+        self.setWindowIcon(icon)
+        app = QApplication.instance()
+        if app is not None:
+            app.setWindowIcon(icon)
+
+    def _build_heading_icon_label(self) -> QLabel | None:
+        icon_path = branding.find_window_icon_path()
+        if icon_path is None:
+            return None
+
+        pixmap = QPixmap(str(icon_path))
+        if pixmap.isNull():
+            return None
+
+        label = QLabel()
+        label.setPixmap(
+            pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        )
+        label.setFixedSize(32, 32)
+        return label
+
     def _wrap_layout(self, layout) -> QWidget:
         widget = QWidget()
         widget.setLayout(layout)
@@ -363,7 +405,7 @@ class FocaleWindow(QMainWindow):
         self._append_log(f"{label} failed.")
         self._append_log(message)
         self._refresh_status_summary()
-        QMessageBox.critical(self, "Focale", f"{label} failed.\n\n{message}")
+        QMessageBox.critical(self, branding.APP_NAME, f"{label} failed.\n\n{message}")
 
     @Slot()
     def _finish_action(self) -> None:
@@ -398,7 +440,9 @@ class FocaleWindow(QMainWindow):
         username = self.username_input.text().strip()
         secret = self.secret_input.text()
         if not username or not secret:
-            QMessageBox.warning(self, "Focale", "Username and password are required.")
+            QMessageBox.warning(
+                self, branding.APP_NAME, "Username and password are required."
+            )
             return
 
         self._start_action(
@@ -415,7 +459,10 @@ class FocaleWindow(QMainWindow):
         self.secret_input.clear()
         self._settings = services.user_settings()
         self.environment_label.setText(
-            str(self._settings.get("environment_label") or "Focale Cloud")
+            str(
+                self._settings.get("environment_label")
+                or branding.default_environment_label(BAKED_ENVIRONMENT)
+            )
         )
         self._refresh_status_summary()
 
@@ -449,10 +496,16 @@ class FocaleWindow(QMainWindow):
         rows = [
             ("Signed in", "Yes" if payload.get("logged_in") else "No"),
             ("Username", str(payload.get("username") or "Not signed in")),
-            ("Environment", str(payload.get("environment_label") or "Focale Cloud")),
+            (
+                "Environment",
+                str(
+                    payload.get("environment_label")
+                    or branding.default_environment_label(BAKED_ENVIRONMENT)
+                ),
+            ),
             ("Stored installations", str(len(payload.get("installations") or {}))),
             ("Known Alpaca servers", str(payload.get("known_alpaca_servers") or 0)),
-            ("Focale version", str(payload.get("focale_version") or __version__)),
+            (f"{branding.APP_NAME} version", str(payload.get("focale_version") or __version__)),
         ]
         auth_error = payload.get("auth_error")
         if auth_error:
@@ -593,7 +646,7 @@ class FocaleWindow(QMainWindow):
             failure_thr = self._required_float(self.centering_failure_input, "Failure threshold")
             max_dur_adj = self._required_int(self.centering_max_dur_adj_input, "Max exposure doublings")
         except FocaleError as exc:
-            QMessageBox.warning(self, "Focale", str(exc))
+            QMessageBox.warning(self, branding.APP_NAME, str(exc))
             return
 
         cache_dir = self._clean(self.solver_cache_dir_input)
@@ -640,6 +693,12 @@ class FocaleWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
+    app.setApplicationDisplayName(branding.display_name(BAKED_ENVIRONMENT))
+    icon_path = branding.find_window_icon_path()
+    if icon_path is not None:
+        icon = QIcon(str(icon_path))
+        if not icon.isNull():
+            app.setWindowIcon(icon)
     services.ensure_environment()
     window = FocaleWindow()
     window.show()

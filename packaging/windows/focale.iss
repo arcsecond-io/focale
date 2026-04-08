@@ -1,14 +1,17 @@
 #ifndef MyAppName
-  #define MyAppName "Focale"
+  #define MyAppName "Focale Relay"
 #endif
 #ifndef MyAppId
   #define MyAppId "11A3125E-D7EA-487D-9998-67E95343F4A5"
 #endif
 #ifndef MyExeName
-  #define MyExeName "focale.exe"
+  #define MyExeName "focale-relay.exe"
 #endif
 #ifndef MyDefaultDirName
-  #define MyDefaultDirName "{autopf}\Arcsecond\Focale"
+  #define MyDefaultDirName "{autopf}\Arcsecond\Focale Relay"
+#endif
+#ifndef MySetupIconFile
+  #define MySetupIconFile ""
 #endif
 #define MyAppPublisher "Arcsecond"
 #ifndef MyAppVersion
@@ -38,6 +41,9 @@ SolidCompression=yes
 OutputDir={#MyOutputDir}
 OutputBaseFilename={#MyAppName}-Setup-{#MyAppVersion}
 WizardStyle=modern
+#if MySetupIconFile != ""
+SetupIconFile={#MySetupIconFile}
+#endif
 
 [Tasks]
 Name: "modifypath"; Description: "Add {#MyAppName} to PATH"; GroupDescription: "Additional tasks:"

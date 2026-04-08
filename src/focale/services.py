@@ -11,6 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 from dataclasses import asdict
 
 from . import __version__
+from . import branding
 from ._environment import ENVIRONMENT as BAKED_ENVIRONMENT
 from .agent_auth import AgentKeypair
 from .alpaca import (
@@ -33,17 +34,17 @@ Logger = Callable[[str], None]
 
 ENVIRONMENT_PRESETS: dict[str, dict[str, str]] = {
     "production": {
-        "label": "Focale Cloud",
+        "label": branding.DEFAULT_ENVIRONMENT_LABEL,
         "api_server": "https://api.arcsecond.io",
         "hub_url": "wss://hub.arcsecond.io/ws/agent",
     },
     "staging": {
-        "label": "Focale Staging",
+        "label": branding.display_name("staging"),
         "api_server": "https://api.arcsecond.dev",
         "hub_url": "wss://hub.arcsecond.dev/ws/agent",
     },
     "dev": {
-        "label": "Focale Dev",
+        "label": branding.display_name("dev"),
         "api_server": "http://localhost:8000",
         "hub_url": "ws://localhost:8002/ws/agent",
     },
