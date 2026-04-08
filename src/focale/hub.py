@@ -5,6 +5,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass
+from threading import Event
 from typing import Any, Callable
 
 import websockets
@@ -14,6 +15,7 @@ from .agent_auth import AgentKeypair
 from .exceptions import HubProtocolError
 
 CommandHandler = Callable[[dict[str, Any], Callable[[str], None]], Any]
+TrafficCallback = Callable[[dict[str, Any]], None]
 
 
 def frame(message_type: str, payload: dict | None = None) -> dict:
@@ -43,6 +45,8 @@ class HubClient:
         jwt: str,
         keypair: AgentKeypair,
         command_handlers: dict[str, CommandHandler] | None = None,
+        traffic_callback: TrafficCallback | None = None,
+        stop_event: Event | None = None,
     ) -> None:
         self.hub_url = hub_url
         self.workspace_id = workspace_id
@@ -50,6 +54,8 @@ class HubClient:
         self.jwt = jwt
         self.keypair = keypair
         self._command_handlers = command_handlers or {}
+        self._traffic_callback = traffic_callback
+        self._stop_event = stop_event
 
     async def connect(self, *, once: bool = False, echo=print) -> HubWelcome:
         try:
@@ -112,7 +118,15 @@ class HubClient:
                 )
 
                 while True:
-                    message = await self._recv(websocket)
+                    if self._stop_event is not None and self._stop_event.is_set():
+                        await websocket.close(code=1000, reason="Relay stopped locally")
+                        echo("Hub relay stopped.")
+                        break
+
+                    try:
+                        message = await asyncio.wait_for(self._recv(websocket), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        continue
                     message_type = message.get("type")
                     if message_type == "ping":
                         await self._send(websocket, "pong", {})
@@ -159,6 +173,20 @@ class HubClient:
         queue: asyncio.Queue = asyncio.Queue()
 
         def sync_echo(msg: str) -> None:
+            if self._traffic_callback is not None:
+                self._traffic_callback(
+                    {
+                        "direction": "local",
+                        "channel": "relay",
+                        "message_type": "progress",
+                        "summary": msg,
+                        "payload": {
+                            "correlation_id": correlation_id,
+                            "command": command_name,
+                            "message": msg,
+                        },
+                    }
+                )
             loop.call_soon_threadsafe(queue.put_nowait, msg)
 
         async def forward_progress() -> None:
@@ -204,9 +232,14 @@ class HubClient:
         message_type: str,
         payload: dict,
     ) -> None:
-        await websocket.send(
-            json.dumps(frame(message_type, payload), separators=(",", ":"))
+        framed = frame(message_type, payload)
+        self._emit_traffic(
+            direction="outgoing",
+            channel="hub",
+            message_type=message_type,
+            payload=framed,
         )
+        await websocket.send(json.dumps(framed, separators=(",", ":")))
 
     async def _recv(self, websocket: WebSocketClientProtocol) -> dict:
         try:
@@ -227,6 +260,12 @@ class HubClient:
         if not isinstance(message, dict):
             raise HubProtocolError("Hub returned a non-object JSON frame.")
 
+        self._emit_traffic(
+            direction="incoming",
+            channel="hub",
+            message_type=str(message.get("type") or "unknown"),
+            payload=message,
+        )
         return message
 
     def _raise_for_error(self, message: dict, fallback: str) -> None:
@@ -236,3 +275,38 @@ class HubClient:
         if code:
             raise HubProtocolError(f"{detail} [{code}]")
         raise HubProtocolError(detail)
+
+    def _emit_traffic(
+        self,
+        *,
+        direction: str,
+        channel: str,
+        message_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if self._traffic_callback is None:
+            return
+        summary = self._summarize_traffic(message_type, payload)
+        self._traffic_callback(
+            {
+                "direction": direction,
+                "channel": channel,
+                "message_type": message_type,
+                "summary": summary,
+                "payload": payload,
+            }
+        )
+
+    def _summarize_traffic(self, message_type: str, payload: dict[str, Any]) -> str:
+        inner = payload.get("payload")
+        if isinstance(inner, dict):
+            if message_type == "command":
+                command_name = inner.get("command") or inner.get("name") or "command"
+                return f"Hub command: {command_name}"
+            if message_type == "command_result":
+                ok = inner.get("ok")
+                correlation_id = inner.get("correlation_id") or "unknown"
+                return f"Command result ({'ok' if ok else 'error'}) for {correlation_id}"
+            if message_type == "progress":
+                return str(inner.get("message") or "Progress update")
+        return message_type

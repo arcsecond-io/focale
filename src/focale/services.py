@@ -5,6 +5,7 @@ import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
@@ -30,6 +31,7 @@ from .platesolver import PlateSolverClient
 from .state import AlpacaServerRecord, CenteringConfig, FocaleState, InstallationRecord
 
 Logger = Callable[[str], None]
+TrafficCallback = Callable[[dict[str, Any]], None]
 
 
 ENVIRONMENT_PRESETS: dict[str, dict[str, str]] = {
@@ -1177,6 +1179,107 @@ def connect_once(
         "agent_uuid": record.agent_uuid,
         "session_id": welcome.session_id,
         "keepalive_s": welcome.keepalive_s,
+    }
+
+
+def relay_messages(
+    *,
+    api_server: str | None,
+    hub_url: str | None,
+    organisation: str | None,
+    workspace_id: str | None,
+    re_enroll: bool,
+    discover_alpaca: bool,
+    echo: Logger,
+    traffic_callback: TrafficCallback | None = None,
+    stop_event: Event | None = None,
+) -> dict[str, Any]:
+    state = FocaleState.load()
+    gateway = _gateway(state=state, api_server=api_server)
+    keypair = AgentKeypair.load_or_create(state.private_key_file())
+    gateway.ensure_authenticated()
+    resolved_organisation = resolve_context_organisation(state, organisation)
+    resolved_hub_url = resolve_hub_url(state, hub_url)
+
+    if resolved_hub_url != state.hub_url:
+        state.hub_url = resolved_hub_url
+        state.save()
+
+    record = _ensure_installation(
+        gateway,
+        state,
+        keypair,
+        organisation=resolved_organisation,
+        re_enroll=re_enroll,
+        echo=echo,
+    )
+
+    try:
+        minted = gateway.mint_agent_token(
+            agent_uuid=record.agent_uuid,
+            organisation=resolved_organisation,
+        )
+    except ArcsecondGatewayError as exc:
+        username = gateway.require_username()
+        scope_type, scope_value = _scope(resolved_organisation, username)
+        if exc.status != 403 or re_enroll:
+            raise
+
+        echo("Stored agent enrollment was rejected. Re-enrolling once.")
+        state.clear_installation(scope_type=scope_type, scope_value=scope_value)
+        record = _ensure_installation(
+            gateway,
+            state,
+            keypair,
+            organisation=resolved_organisation,
+            re_enroll=False,
+            echo=echo,
+        )
+        minted = gateway.mint_agent_token(
+            agent_uuid=record.agent_uuid,
+            organisation=resolved_organisation,
+        )
+
+    if discover_alpaca:
+        try:
+            _discover_and_register_alpaca(
+                gateway,
+                state,
+                organisation=resolved_organisation,
+                echo=echo,
+            )
+        except Exception as exc:  # pragma: no cover - best effort path
+            echo(f"ASCOM discovery skipped: {exc}")
+
+    resolved_workspace_id = workspace_id or state.workspace_id
+    echo(
+        f"Starting relay as agent {record.agent_uuid} "
+        f"({context_label(resolved_organisation)}) on workspace "
+        f"{resolved_workspace_id}."
+    )
+
+    welcome = asyncio.run(
+        HubClient(
+            hub_url=resolved_hub_url,
+            workspace_id=resolved_workspace_id,
+            agent_uuid=record.agent_uuid,
+            jwt=minted.jwt,
+            keypair=keypair,
+            command_handlers=default_command_handlers(),
+            traffic_callback=traffic_callback,
+            stop_event=stop_event,
+        ).connect(once=False, echo=echo)
+    )
+
+    return {
+        "ok": True,
+        "context": context_label(resolved_organisation),
+        "hub_url": resolved_hub_url,
+        "workspace_id": resolved_workspace_id,
+        "agent_uuid": record.agent_uuid,
+        "session_id": welcome.session_id,
+        "keepalive_s": welcome.keepalive_s,
+        "stopped": bool(stop_event and stop_event.is_set()),
     }
 
 

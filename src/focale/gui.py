@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sys
 import traceback
+from datetime import datetime
+from threading import Event
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal, Slot
@@ -67,6 +69,10 @@ class FunctionWorker(QRunnable):
 
 
 class FocaleWindow(QMainWindow):
+    relay_message_signal = Signal(object)
+    relay_started_signal = Signal(object)
+    relay_stopped_signal = Signal(object)
+
     def __init__(self) -> None:
         super().__init__()
         self.thread_pool = QThreadPool(self)
@@ -75,6 +81,12 @@ class FocaleWindow(QMainWindow):
             int, tuple[FunctionWorker, str, Callable[[Any], None] | None]
         ] = {}
         self._settings = services.user_settings()
+        self._relay_stop_event: Event | None = None
+        self._relay_running = False
+
+        self.relay_message_signal.connect(self._append_message_event)
+        self.relay_started_signal.connect(self._handle_relay_started)
+        self.relay_stopped_signal.connect(self._handle_relay_stopped)
 
         self.setWindowTitle(branding.window_title(__version__, BAKED_ENVIRONMENT))
         self.resize(980, 760)
@@ -108,6 +120,8 @@ class FocaleWindow(QMainWindow):
         self.tabs.addTab(self._build_account_tab(), "Account")
         self.tabs.addTab(self._build_alpaca_tab(), "Alpaca Server")
         self.tabs.addTab(self._build_platesolver_tab(), "Plate Solver")
+        self.messages_tab = self._build_messages_tab()
+        self.tabs.addTab(self.messages_tab, "Messages")
         layout.addWidget(self.tabs, 1)
 
         self.log_output = QPlainTextEdit()
@@ -318,6 +332,58 @@ class FocaleWindow(QMainWindow):
 
         return tab
 
+    def _build_messages_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
+
+        info = QLabel(
+            "Live relay traffic between the remote Hub and your local relay session. "
+            "Incoming Hub frames use an inbound arrow, outbound responses and local progress use an outbound arrow."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        controls = QHBoxLayout()
+        self.relay_status_label = QLabel("Relay stopped.")
+        self.start_relay_button = QPushButton("Start Relay")
+        self.stop_relay_button = QPushButton("Stop Relay")
+        clear_button = QPushButton("Clear")
+
+        self.start_relay_button.clicked.connect(self._start_relay)
+        self.stop_relay_button.clicked.connect(self._stop_relay)
+        clear_button.clicked.connect(self._clear_messages)
+        self.stop_relay_button.setEnabled(False)
+
+        controls.addWidget(self.relay_status_label)
+        controls.addStretch(1)
+        controls.addWidget(self.start_relay_button)
+        controls.addWidget(self.stop_relay_button)
+        controls.addWidget(clear_button)
+        layout.addLayout(controls)
+
+        self.messages_table = QTableWidget(0, 5)
+        self.messages_table.setHorizontalHeaderLabels(
+            ["Time", "Dir", "Channel", "Type", "Summary"]
+        )
+        self.messages_table.verticalHeader().setVisible(False)
+        self.messages_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.messages_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.messages_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.messages_table.horizontalHeader().setStretchLastSection(True)
+        self.messages_table.setMinimumHeight(220)
+        self.messages_table.itemSelectionChanged.connect(self._show_selected_message)
+        layout.addWidget(self.messages_table, 1)
+
+        self.message_details = QPlainTextEdit()
+        self.message_details.setReadOnly(True)
+        self.message_details.setPlaceholderText("Select a message to inspect its full payload.")
+        self.message_details.setMinimumHeight(180)
+        layout.addWidget(self.message_details)
+
+        return tab
+
     # ------------------------------------------------------------------ #
     # Helpers                                                              #
     # ------------------------------------------------------------------ #
@@ -405,6 +471,8 @@ class FocaleWindow(QMainWindow):
         self._append_log(f"{label} failed.")
         self._append_log(message)
         self._refresh_status_summary()
+        if label == "Relay":
+            self.relay_stopped_signal.emit({})
         QMessageBox.critical(self, branding.APP_NAME, f"{label} failed.\n\n{message}")
 
     @Slot()
@@ -423,6 +491,16 @@ class FocaleWindow(QMainWindow):
     def _format_payload(self, payload: Any) -> str:
         return json.dumps(payload, indent=2, sort_keys=True, default=str)
 
+    def _message_direction_symbol(self, direction: str) -> str:
+        if direction == "incoming":
+            return "↘"
+        if direction in {"outgoing", "local"}:
+            return "↗"
+        return "•"
+
+    def _message_time(self) -> str:
+        return datetime.now().strftime("%H:%M:%S")
+
     def _api_server(self) -> str | None:
         value = str(self._settings.get("api_server") or "").strip()
         return value or None
@@ -430,6 +508,61 @@ class FocaleWindow(QMainWindow):
     def _hub_url(self) -> str | None:
         value = str(self._settings.get("hub_url") or "").strip()
         return value or None
+
+    def _clear_messages(self) -> None:
+        self.messages_table.setRowCount(0)
+        self.message_details.clear()
+
+    @Slot(object)
+    def _append_message_event(self, event: dict[str, Any]) -> None:
+        row = self.messages_table.rowCount()
+        self.messages_table.insertRow(row)
+
+        payload = event.get("payload") or {}
+        serialized = self._format_payload(payload)
+        values = [
+            self._message_time(),
+            self._message_direction_symbol(str(event.get("direction") or "")),
+            str(event.get("channel") or ""),
+            str(event.get("message_type") or ""),
+            str(event.get("summary") or ""),
+        ]
+        for column, value in enumerate(values):
+            item = QTableWidgetItem(value)
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            item.setData(Qt.UserRole, serialized)
+            self.messages_table.setItem(row, column, item)
+
+        self.messages_table.scrollToBottom()
+        self.messages_table.selectRow(row)
+
+    def _show_selected_message(self) -> None:
+        selected = self.messages_table.selectedItems()
+        if not selected:
+            self.message_details.clear()
+            return
+        self.message_details.setPlainText(str(selected[0].data(Qt.UserRole) or ""))
+
+    def _set_relay_controls(self, *, running: bool, status: str) -> None:
+        self._relay_running = running
+        self.relay_status_label.setText(status)
+        self.start_relay_button.setEnabled(not running)
+        self.stop_relay_button.setEnabled(running)
+
+    @Slot(object)
+    def _handle_relay_started(self, payload: dict[str, Any]) -> None:
+        session_id = str(payload.get("session_id") or "")
+        self._set_relay_controls(
+            running=True,
+            status=f"Relay running. session_id={session_id}" if session_id else "Relay running.",
+        )
+
+    @Slot(object)
+    def _handle_relay_stopped(self, payload: dict[str, Any]) -> None:
+        session_id = str(payload.get("session_id") or "")
+        suffix = f" Last session: {session_id}." if session_id else ""
+        self._set_relay_controls(running=False, status=f"Relay stopped.{suffix}")
+        self._relay_stop_event = None
 
     # ------------------------------------------------------------------ #
     # Account tab actions                                                  #
@@ -550,6 +683,43 @@ class FocaleWindow(QMainWindow):
                 echo=log,
             ),
         )
+
+    def _start_relay(self) -> None:
+        if self._relay_running:
+            return
+
+        api_server = self._api_server()
+        hub_url = self._hub_url()
+        self._relay_stop_event = Event()
+        self._set_relay_controls(running=True, status="Starting relay...")
+        self.tabs.setCurrentWidget(self.messages_tab)
+
+        def run_relay(log: Callable[[str], None]) -> dict[str, Any]:
+            def on_traffic(event: dict[str, Any]) -> None:
+                payload = dict(event)
+                if payload.get("message_type") == "welcome":
+                    self.relay_started_signal.emit(payload.get("payload") or {})
+                self.relay_message_signal.emit(payload)
+
+            return services.relay_messages(
+                api_server=api_server,
+                hub_url=hub_url,
+                organisation=None,
+                workspace_id=None,
+                re_enroll=False,
+                discover_alpaca=False,
+                echo=log,
+                traffic_callback=on_traffic,
+                stop_event=self._relay_stop_event,
+            )
+
+        self._start_action("Relay", run_relay, on_result=self.relay_stopped_signal.emit)
+
+    def _stop_relay(self) -> None:
+        if self._relay_stop_event is None:
+            return
+        self.relay_status_label.setText("Stopping relay...")
+        self._relay_stop_event.set()
 
     # ------------------------------------------------------------------ #
     # Alpaca tab actions                                                   #
